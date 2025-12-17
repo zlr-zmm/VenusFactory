@@ -1613,38 +1613,45 @@ def create_train_tab(constant: Dict[str, Any]) -> Dict[str, Any]:
             with open(config_path, "r", encoding='utf-8') as f:
                 config = json.load(f)
             
-            update_dict = {comp: gr.update() for comp in input_components}
+            # Initialize update dictionary for all input components
+            update_dict = {}
             def get_config_val(key, default):
                 return config.get(key, default)
 
-            update_dict[plm_model] = gr.update(value=get_config_val("plm_model", plm_model.value))
+            # Extract and map plm_model (config stores full path, UI uses key)
+            plm_model_path = get_config_val("plm_model", "")
+            plm_model_value = None
+            # Try to find the key by matching the path value
+            for key, path in plm_models.items():
+                if path == plm_model_path:
+                    plm_model_value = key
+                    break
+            # If not found, use the current value
+            if not plm_model_value:
+                plm_model_value = list(plm_models.keys())[0] if plm_models else None
+            update_dict[plm_model] = gr.update(value=plm_model_value)
             
-            dataset_selection_value = get_config_val("dataset_selection", "Custom Dataset")
+            # Always set to "Custom Dataset" when importing config
+            dataset_selection_value = "Custom Dataset"
             update_dict[is_custom_dataset] = gr.update(value=dataset_selection_value)
             
-            if dataset_selection_value == "Pre-defined Dataset":
-                dataset_config_value = get_config_val("dataset_config", "Demo_Solubility")
-                # Ensure the value is in the choices list
-                if dataset_config_value in list(dataset_configs.keys()):
-                    update_dict[dataset_config] = gr.update(visible=True, value=dataset_config_value)
-                else:
-                    # If not in choices, use the first available choice
-                    update_dict[dataset_config] = gr.update(visible=True, value=list(dataset_configs.keys())[0])
-            else:
-                # For custom dataset, hide dataset_config and don't set any value
-                update_dict[dataset_config] = gr.update(visible=False)
-                
+            # Hide predefined dataset config and show custom dataset path
+            update_dict[dataset_config] = gr.update(visible=False)
             update_dict[dataset_custom] = gr.update(
-                visible=(dataset_selection_value == "Custom Dataset"),
+                visible=True,
                 value=get_config_val("dataset_custom", "")
             )
 
-            is_interactive = (dataset_selection_value == "Custom Dataset")
+            # Always make fields interactive for imported custom dataset configs
+            is_interactive = True
             
-            update_dict[custom_dataset_settings] = gr.update(visible=True)
-            
+            # Validate problem_type
+            problem_type_value = get_config_val("problem_type", "single_label_classification")
+            valid_problem_types = ["single_label_classification", "multi_label_classification", "regression", "residue_single_label_classification", "residue_regression"]
+            if problem_type_value not in valid_problem_types:
+                problem_type_value = "single_label_classification"
             update_dict[problem_type] = gr.update(
-                value=get_config_val("problem_type", "single_label_classification"), 
+                value=problem_type_value, 
                 interactive=is_interactive
             )
             update_dict[num_labels] = gr.update(
@@ -1652,37 +1659,65 @@ def create_train_tab(constant: Dict[str, Any]) -> Dict[str, Any]:
                 interactive=is_interactive
             )
 
+            # Handle metrics - ensure it's a list and values are valid
             metrics_value = get_config_val("metrics", ["accuracy"])
             if isinstance(metrics_value, str):
-                metrics_value = metrics_value.split(",")
+                metrics_value = [m.strip() for m in metrics_value.split(",")]
+            # Validate metrics values
+            valid_metrics = ["accuracy", "recall", "precision", "f1", "mcc", "auroc", "aupr", "f1_max", "f1_positive", "f1_negative", "spearman_corr", "mse"]
+            metrics_value = [m for m in metrics_value if m in valid_metrics]
+            if not metrics_value:
+                metrics_value = ["accuracy"]
             update_dict[metrics] = gr.update(
                 value=metrics_value, 
                 interactive=is_interactive
             )
             
+            # Handle monitored_metrics - ensure it's a valid single value
+            monitored_metrics_value = get_config_val("monitored_metrics", "accuracy")
+            valid_monitored_metrics = ["accuracy", "recall", "precision", "f1", "mcc", "auroc", "aupr", "f1_max", "f1_positive", "f1_negative", "spearman_corr", "mse"]
+            if monitored_metrics_value not in valid_monitored_metrics:
+                monitored_metrics_value = "accuracy"
             update_dict[monitored_metrics] = gr.update(
-                value=get_config_val("monitored_metrics", "accuracy"), 
-                interactive=is_interactive
-            )
-            update_dict[monitored_strategy] = gr.update(
-                value=get_config_val("monitored_strategy", "max"), 
+                value=monitored_metrics_value, 
                 interactive=is_interactive
             )
             
+            # Handle monitored_strategy - ensure it's valid
+            monitored_strategy_value = get_config_val("monitored_strategy", "max")
+            if monitored_strategy_value not in ["max", "min"]:
+                monitored_strategy_value = "max"
+            update_dict[monitored_strategy] = gr.update(
+                value=monitored_strategy_value, 
+                interactive=is_interactive
+            )
+            
+            # Validate training_method
             training_method_value = get_config_val("training_method", "freeze")
+            valid_training_methods = ["full", "freeze", "ses-adapter", "plm-lora", "plm-qlora", "plm-adalora", "plm-dora", "plm-ia3"]
+            if training_method_value not in valid_training_methods:
+                training_method_value = "freeze"
             update_dict[training_method] = gr.update(value=training_method_value)
             
-            update_dict[structure_seq] = gr.update(
-                visible=(training_method_value == "ses-adapter"),
-                value=get_config_val("structure_seq", ["foldseek_seq", "ss8_seq"])
-            )
-            update_dict[lora_params_row] = gr.update(
-                visible=(training_method_value in ["plm-lora", "plm-qlora", "plm-adalora", "plm-dora", "plm-ia3"])
-            )
+            # Update structure_seq visibility and value based on training method
+            if training_method_value == "ses-adapter":
+                structure_seq_value = get_config_val("structure_seq", ["foldseek_seq", "ss8_seq"])
+                if isinstance(structure_seq_value, str):
+                    structure_seq_value = structure_seq_value.split(",")
+                update_dict[structure_seq] = gr.update(visible=True, value=structure_seq_value)
+            else:
+                update_dict[structure_seq] = gr.update(visible=False, value=["foldseek_seq", "ss8_seq"])
             
-            update_dict[pooling_method] = gr.update(value=get_config_val("pooling_method", "mean"))
+            # Handle pooling_method - ensure it's valid
+            pooling_method_value = get_config_val("pooling_method", "mean")
+            if pooling_method_value not in ["mean", "attention1d", "light_attention"]:
+                pooling_method_value = "mean"
+            update_dict[pooling_method] = gr.update(value=pooling_method_value)
             
+            # Validate batch_mode
             batch_mode_value = get_config_val("batch_mode", "Batch Size Mode")
+            if batch_mode_value not in ["Batch Size Mode", "Batch Token Mode"]:
+                batch_mode_value = "Batch Size Mode"
             update_dict[batch_mode] = gr.update(value=batch_mode_value)
             update_dict[batch_size] = gr.update(
                 visible=(batch_mode_value == "Batch Size Mode"), 
@@ -1698,7 +1733,11 @@ def create_train_tab(constant: Dict[str, Any]) -> Dict[str, Any]:
             update_dict[max_seq_len] = gr.update(value=get_config_val("max_seq_len", None))
             update_dict[gradient_accumulation_steps] = gr.update(value=get_config_val("gradient_accumulation_steps", 1))
             update_dict[warmup_steps] = gr.update(value=get_config_val("warmup_steps", 0))
-            update_dict[scheduler_type] = gr.update(value=get_config_val("scheduler", None))
+            # Handle scheduler_type - ensure it's valid
+            scheduler_value = get_config_val("scheduler", None)
+            if scheduler_value not in ["linear", "cosine", "step", None]:
+                scheduler_value = None
+            update_dict[scheduler_type] = gr.update(value=scheduler_value)
             
             update_dict[output_model_name] = gr.update(value=get_config_val("output_model_name", "demo.pt"))
             update_dict[output_dir] = gr.update(value=get_config_val("output_dir", "demo"))
@@ -1716,16 +1755,28 @@ def create_train_tab(constant: Dict[str, Any]) -> Dict[str, Any]:
             update_dict[lora_alpha] = gr.update(value=get_config_val("lora_alpha", 32))
             update_dict[lora_dropout] = gr.update(value=get_config_val("lora_dropout", 0.1))
             update_dict[lora_target_modules] = gr.update(value=get_config_val("lora_target_modules", "query,key,value"))
-
-            gr.Info(f"Configuration successfully imported from {config_path}")
             
-            return [update_dict[comp] for comp in input_components]
+            # Add sequence and label column names
+            update_dict[sequence_column_name] = gr.update(
+                value=get_config_val("sequence_column_name", "aa_seq"),
+                interactive=is_interactive
+            )
+            update_dict[label_column_name] = gr.update(
+                value=get_config_val("label_column_name", "label"),
+                interactive=is_interactive
+            )
+
+            gr.Info(f"✅ Configuration successfully imported from {config_path}")
+            
+            # Return updates in the exact order of input_components
+            # Ensure every component has an update, use gr.update() for any missing
+            return [update_dict.get(comp, gr.update()) for comp in input_components]
 
         except (json.JSONDecodeError, KeyError) as e:
-            gr.Warning(f"Error parsing configuration file: {str(e)}")
+            gr.Warning(f"❌ Error parsing configuration file: {str(e)}")
             return [gr.update() for _ in input_components]
         except Exception as e:
-            gr.Warning(f"An unexpected error occurred during import: {str(e)}")
+            gr.Warning(f"❌ An unexpected error occurred during import: {str(e)}")
             return [gr.update() for _ in input_components]
  
     # define all input components
@@ -1939,22 +1990,19 @@ def create_train_tab(constant: Dict[str, Any]) -> Dict[str, Any]:
                 })
             return result
         else:
-            # custom dataset settings, clear/set to default and editable
-            # provide default values for multi-select components
-            default_metrics = ["accuracy", "mcc", "f1", "precision", "recall", "auroc"]
-            default_monitored_metrics = ["accuracy"]
-            default_monitored_strategy = ["max"]
+            # custom dataset settings, make fields editable but don't reset values
+            # This allows config import to work correctly
             return {
                 dataset_config: gr.update(visible=False),
                 dataset_custom: gr.update(visible=True),
                 custom_dataset_settings: gr.update(visible=True),
-                problem_type: gr.update(value="single_label_classification", interactive=True),
-                num_labels: gr.update(value=2, interactive=True),
-                metrics: gr.update(value=default_metrics, interactive=True),
-                monitored_metrics: gr.update(value=default_monitored_metrics, interactive=True),
-                monitored_strategy: gr.update(value=default_monitored_strategy, interactive=True),
-                sequence_column_name: gr.update(value="aa_seq", interactive=True),
-                label_column_name: gr.update(value="label", interactive=True)
+                problem_type: gr.update(interactive=True),
+                num_labels: gr.update(interactive=True),
+                metrics: gr.update(interactive=True),
+                monitored_metrics: gr.update(interactive=True),
+                monitored_strategy: gr.update(interactive=True),
+                sequence_column_name: gr.update(interactive=True),
+                label_column_name: gr.update(interactive=True)
             }
 
     # bind dataset settings update event
