@@ -1,8 +1,7 @@
 import sys
 import os
-
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com' 
 sys.path.append(os.getcwd())
-
 from src.models.adapter_model import AdapterModel
 import argparse
 import torch
@@ -68,10 +67,8 @@ def load_model_and_tokenizer(args):
             f"Model config not found at {config_path}. Using command line arguments only.")
 
     # Load PLM (Pre-trained Language Model).
-    # Use Hugging Face mirror for faster downloads in China
-    os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
-    tokenizer = EsmTokenizer.from_pretrained("facebook/esm2_t33_650M_UR50D", cache_dir="/data1/cache")
-    plm_model = EsmModel.from_pretrained("facebook/esm2_t33_650M_UR50D", cache_dir="/data1/cache").to(device)
+    tokenizer = EsmTokenizer.from_pretrained("facebook/esm2_t33_650M_UR50D", cache_dir="data1/cache")
+    plm_model = EsmModel.from_pretrained("facebook/esm2_t33_650M_UR50D", cache_dir="data1/cache").to(device)
 
     # Instantiate AdapterModel and load the trained weights.
     model = AdapterModel(args)

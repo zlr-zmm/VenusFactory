@@ -1,8 +1,7 @@
 import sys
 import os
-
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com' 
 sys.path.append(os.getcwd())
-
 import argparse
 import torch
 import json
@@ -68,11 +67,8 @@ def load_model_and_tokenizer(args):
         print(
             f"Model config not found at {config_path}. Using command line arguments only.")
 
-
-    # Use Hugging Face mirror for faster downloads in China
-    os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
-    tokenizer = BertTokenizer.from_pretrained("Rostlab/prot_bert", do_lower_case=False, cache_dir="/data1/cache")
-    plm_model = BertModel.from_pretrained("Rostlab/prot_bert", cache_dir="/data1/cache").to(device)
+    tokenizer = BertTokenizer.from_pretrained("Rostlab/prot_bert", do_lower_case=False, cache_dir="data1/cache")
+    plm_model = BertModel.from_pretrained("Rostlab/prot_bert", cache_dir="data1/cache").to(device)
 
     # Instantiate AdapterModel and load the trained weights.
     model = AdapterModel(args)

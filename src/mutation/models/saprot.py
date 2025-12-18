@@ -1,5 +1,6 @@
 import sys
 import os
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com' 
 sys.path.append(os.getcwd())
 import time
 import argparse
@@ -143,12 +144,10 @@ def saprot_score(pdb_file: str, mutants: List[str], chain: str = "A",
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Use Hugging Face mirror for faster downloads in China
-    os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
     # Load SaProt model and tokenizer
     model_path = "westlake-repl/SaProt_650M_AF2"
-    tokenizer = EsmTokenizer.from_pretrained(model_path, trust_remote_code=True, cache_dir="/data1/cache")
-    model = EsmForMaskedLM.from_pretrained(model_path, trust_remote_code=True, cache_dir="/data1/cache").to(device)
+    tokenizer = EsmTokenizer.from_pretrained(model_path, trust_remote_code=True, cache_dir="data1/cache")
+    model = EsmForMaskedLM.from_pretrained(model_path, trust_remote_code=True, cache_dir="data1/cache").to(device)
 
     foldseek_struc_vocab = "pynwrqhgdlvtmfsaeikc#"
     # Setup foldseek path

@@ -1,8 +1,7 @@
 import sys
 import os
-
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com' 
 sys.path.append(os.getcwd())
-
 import argparse
 import torch
 import json
@@ -70,10 +69,8 @@ def load_model_and_tokenizer(args):
 
 
     # Load PLM (Pre-trained Language Model).
-    # Use Hugging Face mirror for faster downloads in China
-    os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
-    tokenizer = AutoTokenizer.from_pretrained("ElnaggarLab/ankh-large", do_lower_case=False, cache_dir="/data1/cache")
-    plm_model = T5EncoderModel.from_pretrained("ElnaggarLab/ankh-large", cache_dir="/data1/cache").to(device)
+    tokenizer = AutoTokenizer.from_pretrained("ElnaggarLab/ankh-large", do_lower_case=False, cache_dir="data1/cache")
+    plm_model = T5EncoderModel.from_pretrained("ElnaggarLab/ankh-large", cache_dir="data1/cache").to(device)
 
     # Instantiate AdapterModel and load the trained weights.
     model = AdapterModel(args)

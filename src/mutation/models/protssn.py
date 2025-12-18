@@ -1,5 +1,6 @@
 import os
 import sys
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com' 
 sys.path.append(os.getcwd())
 import math
 import yaml
@@ -537,12 +538,11 @@ def protssn_score(pdb_file: str, mutants: List[str],
     # Load sequence from PDB
     sequence = extract_seq_from_pdb(pdb_file)
     
-    # Use Hugging Face mirror for faster downloads in China
-    os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+
     # Load PLM model
     plm = "facebook/esm2_t33_650M_UR50D"
-    esm_model = EsmModel.from_pretrained(plm, cache_dir="/data1/cache").to(device)
-    tokenizer = AutoTokenizer.from_pretrained(plm, cache_dir="/data1/cache")
+    esm_model = EsmModel.from_pretrained(plm, cache_dir="data1/cache").to(device)
+    tokenizer = AutoTokenizer.from_pretrained(plm, cache_dir="data1/cache")
     
     if use_ensemble:
         # Ensemble mode: use multiple model configurations

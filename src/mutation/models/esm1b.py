@@ -1,5 +1,6 @@
 import sys
 import os
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com' 
 sys.path.append(os.getcwd())
 import argparse
 import torch
@@ -26,11 +27,9 @@ def esm1b_score(fasta_file: str, mutants: List[str],
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    # Use Hugging Face mirror for faster downloads in China
-    os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
     # Load ESM1B model and tokenizer
-    esm1b_model = AutoModelForMaskedLM.from_pretrained(model_name, trust_remote_code=True, cache_dir="/data1/cache").to(device)
-    esm1b_tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, cache_dir="/data1/cache")
+    esm1b_model = AutoModelForMaskedLM.from_pretrained(model_name, trust_remote_code=True, cache_dir="data1/cache").to(device)
+    esm1b_tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, cache_dir="data1/cache")
 
     # Load sequence from FASTA file
     with open(fasta_file, 'r') as f:
