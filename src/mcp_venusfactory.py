@@ -31,7 +31,7 @@ from web.chat_tools import (
 UPLOAD_DIR = get_save_path("MCP_Server", "Uploads")
 OUTPUT_DIR = get_save_path("MCP_Server", "Outputs")
 
-default_port = int(os.getenv("MCP_HTTP_PORT", "8081"))
+default_port = int(os.getenv("MCP_HTTP_PORT", "8080"))
 default_host = os.getenv("MCP_HTTP_HOST", "0.0.0.0")
 
 logging.basicConfig(
@@ -144,25 +144,25 @@ class ZeroShotSequencePredictionInput(BaseModel):
         if self.sequence and self.fasta_file:
             raise ValueError("Provide either sequence or fasta_file, not both")
 
-class ZeroShotStructurePredictionInput(BaseModel):
-    """Input validation for zero-shot structure prediction."""
-    structure_file_path: str = Field(..., min_length=1, description="Path to structure file")
-    model_name: str = Field(default="ESM-IF1", description="Model name")
+# class ZeroShotStructurePredictionInput(BaseModel):
+#     """Input validation for zero-shot structure prediction."""
+#     structure_file_path: str = Field(..., min_length=1, description="Path to structure file")
+#     model_name: str = Field(default="ESM-IF1", description="Model name")
     
-    @field_validator('model_name')
-    @classmethod
-    def validate_model_name(cls, v: str) -> str:
-        allowed_models = ["VenusREM", "ProSST-2048", "ProtSSN", "ESM-IF1", "SaProt", "MIF-ST"]
-        if v not in allowed_models:
-            raise ValueError(f"Model must be one of: {', '.join(allowed_models)}")
-        return v
+#     @field_validator('model_name')
+#     @classmethod
+#     def validate_model_name(cls, v: str) -> str:
+#         allowed_models = ["VenusREM (foldseek-based)", "ProSST-2048", "ProtSSN", "ESM-IF1", "SaProt", "MIF-ST"]
+#         if v not in allowed_models:
+#             raise ValueError(f"Model must be one of: {', '.join(allowed_models)}")
+#         return v
     
-    @field_validator('structure_file_path')
-    @classmethod
-    def validate_file_path(cls, v: str) -> str:
-        if not v or not v.strip():
-            raise ValueError("File path cannot be empty")
-        return v.strip()
+#     @field_validator('structure_file_path')
+#     @classmethod
+#     def validate_file_path(cls, v: str) -> str:
+#         if not v or not v.strip():
+#             raise ValueError("File path cannot be empty")
+#         return v.strip()
 
 class ProteinFunctionPredictionInput(BaseModel):
     """Input validation for protein function prediction."""
@@ -383,13 +383,19 @@ _http_server_lock = threading.Lock()
 def start_http_server(host: Optional[str] = None, port: Optional[int] = None) -> tuple[str, int]:
     global _http_server_thread
     host = host or os.getenv("MCP_HTTP_HOST", "0.0.0.0")
-    port = port or int(os.getenv("MCP_HTTP_PORT", "8081"))
+    port = port or int(os.getenv("MCP_HTTP_PORT", "8080"))
 
     def _serve() -> None:
         try:
             logger.info(f"🚀 VenusFactory MCP Server running internally on {host}:{port}")
             logger.info(f"📡 SSE Endpoint: http://{host}:{port}/sse") 
-            mcp.run(transport="sse", host=host, port=port)
+            app_with_route = mcp.sse_app()
+            uvicorn.run(
+                app_with_route,
+                host=host,
+                port=port
+            )
+        
             
         except Exception as exc:
             logger.error("MCP HTTP server exited unexpectedly: %s", exc)
@@ -405,10 +411,18 @@ def start_http_server(host: Optional[str] = None, port: Optional[int] = None) ->
 
     return host, port
 
-@mcp.tool()
+
+@mcp.tool(
+    meta={
+        "scp_properties": {
+            "type": "sync",
+            "limit": 1
+        }
+    }
+)
 async def query_uniprot(uniprot_id: str) -> str:
     """
-    Query UniProt for protein information.
+    Retrieve protein amino acid sequence and metadata from UniProt database by accession ID.
     Args:
         uniprot_id (str): UniProt ID of the protein.
     Returns:
@@ -424,10 +438,17 @@ async def query_uniprot(uniprot_id: str) -> str:
     except Exception as e:
         return format_tool_response(None, error=e)
 
-@mcp.tool()
+@mcp.tool(
+    meta={
+        "scp_properties": {
+            "type": "sync",
+            "limit": 1
+        }
+    }
+)
 async def query_interpro(uniprot_id: str) -> str:
     """
-    Query InterPro for protein domain information.
+    Retrieve protein domain annotations, GO terms, and functional information from InterPro database.
     Args:
         uniprot_id (str): UniProt ID of the protein.
     Returns:
@@ -443,10 +464,17 @@ async def query_interpro(uniprot_id: str) -> str:
     except Exception as e:
         return format_tool_response(None, error=e)
 
-@mcp.tool()
+@mcp.tool(
+    meta={
+        "scp_properties": {
+            "type": "sync",
+            "limit": 1
+        }
+    }
+)
 async def download_pdb_structure(pdb_id: str, output_format: str = "pdb") -> str:
     """
-    Download PDB structure file.
+    Download experimental 3D protein structure from RCSB PDB database and save to local file.
     Args:
         pdb_id (str): PDB ID of the structure.
         output_format (str): Output the path of the structure file.
@@ -466,10 +494,17 @@ async def download_pdb_structure(pdb_id: str, output_format: str = "pdb") -> str
     except Exception as e:
         return format_tool_response(None, error=e)
 
-@mcp.tool()
+@mcp.tool(
+    meta={
+        "scp_properties": {
+            "type": "sync",
+            "limit": 1
+        }
+    }
+)
 async def download_ncbi_sequence(accession_id: str, output_format: str = "fasta") -> str:
     """
-    Download NCBI sequence file.
+    Download protein or nucleotide sequence from NCBI database and save as FASTA file.
     Args:
         accession_id (str): Accession ID of the sequence.
         output_format (str): Output the path of the sequence file.
@@ -489,10 +524,17 @@ async def download_ncbi_sequence(accession_id: str, output_format: str = "fasta"
     except Exception as e:
         return format_tool_response(None, error=e)
 
-@mcp.tool()
+@mcp.tool(
+    meta={
+        "scp_properties": {
+            "type": "sync",
+            "limit": 1
+        }
+    }
+)
 async def download_alphafold_structure(uniprot_id: str, output_format: str = "pdb") -> str:
     """
-    Download AlphaFold structure file.
+    Download AI-predicted 3D protein structure from AlphaFold database with confidence scores.
     Args:
         uniprot_id (str): UniProt ID of the protein.
         output_format (str): Output the path of the structure file.
@@ -512,10 +554,17 @@ async def download_alphafold_structure(uniprot_id: str, output_format: str = "pd
     except Exception as e:
         return format_tool_response(None, error=e)
 
-@mcp.tool()
+@mcp.tool(
+    meta={
+        "scp_properties": {
+            "type": "sync",
+            "limit": 1
+        }
+    }
+)
 async def extract_pdb_sequence(pdb_file_path: str) -> str:
     """
-    Extract sequence from PDB file.
+    Extract amino acid sequences from PDB structure file for all protein chains.
     Args:
         pdb_file_path (str): Path to the PDB file.
     Returns:
@@ -531,14 +580,21 @@ async def extract_pdb_sequence(pdb_file_path: str) -> str:
     except Exception as e:
         return format_tool_response(None, error=e)
 
-@mcp.tool()
+@mcp.tool(
+    meta={
+        "scp_properties": {
+            "type": "sync",
+            "limit": 1
+        }
+    }
+)
 async def predict_zero_shot_sequence(
     sequence: Optional[str] = None, 
     fasta_file: Optional[str] = None,
     model_name: str = "ESM2-650M"
 ) -> str:
     """
-    Predict zero-shot sequence.
+    Predict beneficial single-point mutations from protein sequence using pre-trained language models (no training data required).
     Args:
         sequence (Optional[str]): Protein sequence.
         fasta_file (Optional[str]): Path to the FASTA file.
@@ -567,36 +623,43 @@ async def predict_zero_shot_sequence(
     except Exception as e:
         return format_tool_response(None, error=e)
 
-@mcp.tool()
-async def predict_zero_shot_structure(
-    structure_file_path: str,
-    model_name: str = "ESM-IF1"
-) -> str:
-    """
-    Predict zero-shot structure.
-    Args:
-        structure_file_path (str): Path to the structure file.
-        model_name (str): Model name for prediction. Supported models: VenusREM (foldseek-based), ProSST-2048, ProtSSN, ESM-IF1, SaProt, MIF-ST
-    Returns:
-        str: Prediction result.
-    """
-    try:
-        # Validate input using Pydantic
-        validated_input = ZeroShotStructurePredictionInput(
-            structure_file_path=structure_file_path,
-            model_name=model_name
-        )
-        result = await asyncio.to_thread(zero_shot_structure_prediction_tool.invoke, {
-            "structure_file": validated_input.structure_file_path,
-            "model_name": validated_input.model_name
-        })
-        return format_tool_response(result)
-    except ValueError as e:
-        return format_tool_response(None, error=e)
-    except Exception as e:
-        return format_tool_response(None, error=e)
+# @mcp.tool()
+# async def predict_zero_shot_structure(
+#     structure_file_path: str,
+#     model_name: str = "ESM-IF1"
+# ) -> str:
+#     """
+#     Predict beneficial single-point mutations from 3D protein structure using pre-trained models (no training data required).
+#     Args:
+#         structure_file_path (str): Path to the structure file.
+#         model_name (str): Model name for prediction. Supported models: VenusREM (foldseek-based), ProSST-2048, ProtSSN, ESM-IF1, SaProt, MIF-ST
+#     Returns:
+#         str: Prediction result.
+#     """
+#     try:
+#         # Validate input using Pydantic
+#         validated_input = ZeroShotStructurePredictionInput(
+#             structure_file_path=structure_file_path,
+#             model_name=model_name
+#         )
+#         result = await asyncio.to_thread(zero_shot_structure_prediction_tool.invoke, {
+#             "structure_file": validated_input.structure_file_path,
+#             "model_name": validated_input.model_name
+#         })
+#         return format_tool_response(result)
+#     except ValueError as e:
+#         return format_tool_response(None, error=e)
+#     except Exception as e:
+#         return format_tool_response(None, error=e)
 
-@mcp.tool()
+@mcp.tool(
+    meta={
+        "scp_properties": {
+            "type": "sync",
+            "limit": 1
+        }
+    }
+)
 async def predict_protein_function(
     sequence: Optional[str] = None,
     fasta_file: Optional[str] = None,
@@ -604,7 +667,7 @@ async def predict_protein_function(
     task: str = "Solubility"
 ) -> str:
     """
-    Predict protein function.
+    Predict protein functional properties (solubility, localization, stability, etc.) from amino acid sequence.
     Args:
         sequence (Optional[str]): Protein sequence.
         fasta_file (Optional[str]): Path to the FASTA file.
@@ -638,7 +701,14 @@ async def predict_protein_function(
     except Exception as e:
         return format_tool_response(None, error=e)
 
-@mcp.tool()
+@mcp.tool(
+    meta={
+        "scp_properties": {
+            "type": "sync",
+            "limit": 1
+        }
+    }
+)
 async def predict_functional_residue(
     sequence: Optional[str] = None,
     fasta_file: Optional[str] = None,
@@ -646,7 +716,7 @@ async def predict_functional_residue(
     task: str = "Activity Site"
 ) -> str:
     """
-    Predict functional residue.
+    Identify functional residues (active sites, binding sites, conserved sites) in protein sequence.
     Args:
         sequence (Optional[str]): Protein sequence.
         fasta_file (Optional[str]): Path to the FASTA file.
@@ -680,49 +750,56 @@ async def predict_functional_residue(
     except Exception as e:
         return format_tool_response(None, error=e)
 
-@mcp.tool()
-async def predict_protein_properties(
-    sequence: Optional[str] = None,
-    fasta_file: Optional[str] = None,
-    task_name: str = "Physical and chemical properties"
-) -> str:
-    """
-    Predict protein properties.
-    Args:
-        sequence (Optional[str]): Protein sequence.
-        fasta_file (Optional[str]): Path to the FASTA file.
-        task_name (str): Task name for prediction. Support Task: Physical and chemical properties, Relative solvent accessible surface area (PDB only), SASA value (PDB only), Secondary structure (PDB only)
-    Returns:
-        str: Prediction result.
-    """
-    try:
-        # Validate input using Pydantic
-        validated_input = ProteinPropertiesPredictionInput(
-            sequence=sequence,
-            fasta_file=fasta_file,
-            task_name=task_name
-        )
+# @mcp.tool()
+# async def predict_protein_properties(
+#     sequence: Optional[str] = None,
+#     fasta_file: Optional[str] = None,
+#     task_name: str = "Physical and chemical properties"
+# ) -> str:
+#     """
+#     Calculate physical and chemical properties (molecular weight, pI, SASA, secondary structure) from protein sequence or structure.
+#     Args:
+#         sequence (Optional[str]): Protein sequence.
+#         fasta_file (Optional[str]): Path to the PDB file.
+#         task_name (str): Task name for prediction. Support Task: Physical and chemical properties, Relative solvent accessible surface area (PDB only), SASA value (PDB only), Secondary structure (PDB only)
+#     Returns:
+#         str: Prediction result.
+#     """
+#     try:
+#         # Validate input using Pydantic
+#         validated_input = ProteinPropertiesPredictionInput(
+#             sequence=sequence,
+#             fasta_file=fasta_file,
+#             task_name=task_name
+#         )
         
-        params = {
-            "task_name": validated_input.task_name
+#         params = {
+#             "task_name": validated_input.task_name
+#         }
+#         if validated_input.fasta_file:
+#             params["fasta_file"] = validated_input.fasta_file
+#         elif validated_input.sequence:
+#             params["sequence"] = validated_input.sequence
+
+#         result = await asyncio.to_thread(protein_properties_generation_tool.invoke, params)
+#         return format_tool_response(result)
+#     except ValueError as e:
+#         return format_tool_response(None, error=e)
+#     except Exception as e:
+#         return format_tool_response(None, error=e)
+
+
+@mcp.tool(
+    meta={
+        "scp_properties": {
+            "type": "sync",
+            "limit": 1
         }
-        if validated_input.fasta_file:
-            params["fasta_file"] = validated_input.fasta_file
-        elif validated_input.sequence:
-            params["sequence"] = validated_input.sequence
-
-        result = await asyncio.to_thread(protein_properties_generation_tool.invoke, params)
-        return format_tool_response(result)
-    except ValueError as e:
-        return format_tool_response(None, error=e)
-    except Exception as e:
-        return format_tool_response(None, error=e)
-
-
-@mcp.tool()
+    }
+)
 async def search_literature(query: str, max_results: int = 5) -> str:
     """
-    Search literature.
+    Search scientific literature databases (PubMed) for relevant research papers and publications.
     Args:
         query (str): Search query.
         max_results (int): Maximum number of results.

@@ -70,8 +70,10 @@ def load_model_and_tokenizer(args):
 
 
     # Load PLM (Pre-trained Language Model).
-    tokenizer = T5Tokenizer.from_pretrained("Rostlab/prot_t5_xl_uniref50", do_lower_case=False)
-    plm_model = T5EncoderModel.from_pretrained("Rostlab/prot_t5_xl_uniref50").to(device)
+    # Use Hugging Face mirror for faster downloads in China
+    os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+    tokenizer = T5Tokenizer.from_pretrained("Rostlab/prot_t5_xl_uniref50", do_lower_case=False, cache_dir="/data1/cache")
+    plm_model = T5EncoderModel.from_pretrained("Rostlab/prot_t5_xl_uniref50", cache_dir="/data1/cache").to(device)
 
     # Instantiate AdapterModel and load the trained weights.
     model = AdapterModel(args)

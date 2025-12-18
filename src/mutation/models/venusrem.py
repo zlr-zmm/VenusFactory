@@ -184,10 +184,12 @@ def venusrem_score(pdb_file: str, mutants: List[str], alpha: float = 0.8) -> Lis
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
+    # Use Hugging Face mirror for faster downloads in China
+    os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
     # Load ProSST model and tokenizer
     print(">>> Loading ProSST model and tokenizer...")
-    prosst_model = AutoModelForMaskedLM.from_pretrained("AI4Protein/ProSST-2048", trust_remote_code=True).to(device)
-    prosst_tokenizer = AutoTokenizer.from_pretrained("AI4Protein/ProSST-2048", trust_remote_code=True)
+    prosst_model = AutoModelForMaskedLM.from_pretrained("AI4Protein/ProSST-2048", trust_remote_code=True, cache_dir="/data1/cache").to(device)
+    prosst_tokenizer = AutoTokenizer.from_pretrained("AI4Protein/ProSST-2048", trust_remote_code=True, cache_dir="/data1/cache")
     predictor = SSTPredictor(structure_vocab_size=2048)
 
     # Extract structure sequence from PDB
