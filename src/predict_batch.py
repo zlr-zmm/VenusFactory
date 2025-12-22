@@ -325,7 +325,8 @@ def predict_batch(model, plm_model, data_dict, device, args):
                 return {"predictions": predictions.tolist() if isinstance(predictions, np.ndarray) else predictions}
     # Move data to device
     for k, v in data_dict.items():
-        data_dict[k] = v.to(device)
+        if hasattr(v, 'to'):  # 检查是否有 .to() 方法
+            data_dict[k] = v.to(device)
     
     # Run model inference
     with torch.no_grad():
@@ -512,6 +513,9 @@ def main():
         
         print("---------- Batch prediction completed successfully ----------")
         
+        # 返回输出文件的绝对路径
+        return os.path.abspath(output_file)
+        
     except Exception as e:
         print(f"Error: {str(e)}")
         import traceback
@@ -519,4 +523,6 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    main() 
+    output_path = main()
+    if output_path:
+        print(f"\n✓ Output file saved to: {output_path}") 

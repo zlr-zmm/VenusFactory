@@ -69,8 +69,8 @@ def load_model_and_tokenizer(args):
 
 
     # Load PLM (Pre-trained Language Model).
-    tokenizer = T5Tokenizer.from_pretrained("Rostlab/prot_t5_xl_uniref50", do_lower_case=False, cache_dir="data1/cache")
-    plm_model = T5EncoderModel.from_pretrained("Rostlab/prot_t5_xl_uniref50", cache_dir="data1/cache").to(device)
+    tokenizer = T5Tokenizer.from_pretrained("data1/cache/models--Rostlab--prot_t5_xl_uniref50", do_lower_case=False)
+    plm_model = T5EncoderModel.from_pretrained("data1/cache/models--Rostlab--prot_t5_xl_uniref50").to(device)
 
     # Instantiate AdapterModel and load the trained weights.
     model = AdapterModel(args)
@@ -119,11 +119,16 @@ def predict(model, data_dict, device, args, plm_model):
                 "probabilities": probabilities
             }
         elif args.problem_type == "residue_single_label_classification":
-            probabilities = torch.nn.functional.softmax(outputs, dim=1)
-            predicted_class = torch.argmax(probabilities, dim=1).item()
-            class_probs = probabilities.squeeze().tolist()
+            probabilities = torch.nn.functional.softmax(outputs, dim=-1)
+            predictions = torch.argmax(probabilities, dim=-1).tolist()
+            probabilities = probabilities.tolist()
+            if not isinstance(predictions, list):
+                predictions = [predictions]
+            if not isinstance(probabilities, list):
+                probabilities = [probabilities]
+
             return {
-                "predicted_class": predicted_class,
+                "predicted_class": predictions,
                 "probabilities": probabilities
             }
 

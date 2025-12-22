@@ -71,7 +71,7 @@ def esmif1_score(pdb_file: str, mutants: List[str], chain: str = "A",
 
     # Load model
     print(f"Loading ESM-IF1 model: {model_name}")
-    model, alphabet = pretrained.load_model_and_alphabet(model_name)
+    model, alphabet = pretrained.load_model_and_alphabet("esm_if1_gvp4_t16_142M_UR50")
     model.eval()
     model = model.to(device)
     

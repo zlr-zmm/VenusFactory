@@ -20,6 +20,7 @@ from gradio_client import Client, handle_file
 import pandas as pd
 from langchain.tools import tool
 from pydantic import BaseModel, Field, validator
+from web.utils.file_handlers import extract_first_chain_from_pdb_file, extract_first_sequence_from_fasta_file
 from web.utils.common_utils import get_save_path
 from web.utils.literature import literature_search
 from web.utils.command import build_command_list, build_predict_command_list
@@ -37,12 +38,12 @@ class ZeroShotSequenceInput(BaseModel):
     sequence: Optional[str] = Field(None, description="Protein sequence in single letter amino acid code")
     fasta_file: Optional[str] = Field(None, description="Path to FASTA file")
     model_name: str = Field(default="ESM2-650M", description="Model name: ESM-1v, ESM2-650M, ESM-1b, VenusPLM")
-
+    
 class ZeroShotStructureInput(BaseModel):
     """Input for zero-shot structure mutation prediction"""
     structure_file: str = Field(..., description="Path to PDB structure file")
     model_name: str = Field(default="ESM-IF1", description="Model name: SaProt, ProtSSN, ESM-IF1, MIF-ST, ProSST-2048")
-
+        
 class FunctionPredictionInput(BaseModel):
     """Input for protein function prediction"""
     sequence: Optional[str] = Field(None, description="Protein sequence in single letter amino acid code")
@@ -131,6 +132,8 @@ def zero_shot_sequence_prediction_tool(sequence: Optional[str] = None, fasta_fil
         if fasta_file:
             if not os.path.exists(fasta_file):
                 return f"Error: FASTA file not found at path: {fasta_file}"
+            # Extract first sequence if multi-sequence FASTA
+            fasta_file = extract_first_sequence_from_fasta_file(fasta_file)
             return call_zero_shot_sequence_prediction(
                 fasta_file=fasta_file, model_name=model_name, api_key=api_key
                 )
@@ -169,6 +172,8 @@ def protein_function_prediction_tool(sequence: Optional[str] = None, fasta_file:
     """Predict protein functions like solubility, localization, metal ion binding, stability, sorting signal, and optimum temperature."""
     try:
         if fasta_file and os.path.exists(fasta_file):
+            # Extract first sequence if multi-sequence FASTA
+            fasta_file = extract_first_sequence_from_fasta_file(fasta_file)
             return call_protein_function_prediction(
                 fasta_file=fasta_file, model_name=model_name, task=task, api_key=api_key
                 )
@@ -185,6 +190,8 @@ def protein_function_prediction_tool(sequence: Optional[str] = None, fasta_file:
 def functional_residue_prediction_tool(sequence: Optional[str] = None, fasta_file: Optional[str] = None, model_name: str = "ESM2-650M", task: str = "Activate", api_key: Optional[str] = None) -> str:
     try:
         if fasta_file and os.path.exists(fasta_file):
+            # Extract first sequence if multi-sequence FASTA
+            fasta_file = extract_first_sequence_from_fasta_file(fasta_file)
             return call_functional_residue_prediction(
                 fasta_file=fasta_file, model_name=model_name, task=task, api_key=api_key
                 )
@@ -265,6 +272,13 @@ def protein_properties_generation_tool(sequence: Optional[str] = None, fasta_fil
         if fasta_file:
             if not os.path.exists(fasta_file):
                 return f"Error: FASTA file not found at path: {fasta_file}"
+            # Process file based on type
+            if fasta_file.lower().endswith('.pdb'):
+                # Extract first chain for PDB files
+                fasta_file = extract_first_chain_from_pdb_file(fasta_file)
+            elif fasta_file.lower().endswith(('.fasta', '.fa')):
+                # Extract first sequence for FASTA files
+                fasta_file = extract_first_sequence_from_fasta_file(fasta_file)
             return call_protein_properties_prediction(
                 fasta_file=fasta_file, task_name=task_name, api_key=api_key
                 )
@@ -339,10 +353,12 @@ def call_zero_shot_sequence_prediction(
             fasta_path = fasta_file
             temp_fasta_created = False
         elif sequence:
-            temp_fasta = tempfile.NamedTemporaryFile(mode='w', suffix='.fasta', delete=False)
-            temp_fasta.write(f">temp_sequence\n{sequence}\n")
-            temp_fasta.close()
-            fasta_path = temp_fasta.name
+            # Use temp_outputs directory instead of system temp
+            temp_dir = get_save_path("MCP_Server", "TempFasta")
+            temp_fasta_path = temp_dir / f"temp_sequence_{uuid.uuid4().hex[:8]}.fasta"
+            with open(temp_fasta_path, 'w') as f:
+                f.write(f">temp_sequence\n{sequence}\n")
+            fasta_path = str(temp_fasta_path)
             temp_fasta_created = True
         else:
             return "Zero-shot sequence prediction error: No sequence or fasta_file provided."
@@ -400,20 +416,23 @@ def call_zero_shot_sequence_prediction(
                                 raw_result['csv_path'] = csv_path
                 except Exception as e:
                     print(f"Warning: Could not extract file paths: {e}")
-        
+            
             return json.dumps(raw_result, indent=2)
         except (json.JSONDecodeError, KeyError, TypeError):
             return raw_result
     except Exception as e:
         return f"Zero-shot sequence prediction error: {str(e)}"
 
-def call_zero_shot_structure_prediction_from_file(structure_file: str, model_name: str = "ESM-IF1", api_key: Optional[str] = None) -> str:
+def call_zero_shot_structure_prediction_from_file(structure_file: str, model_name: str = "ESM-IF1", api_key: Optional[str] = None, user_output_dir: Optional[str] = None) -> str:
     """Call VenusFactory zero-shot structure-based mutation prediction API"""
     try:
+        # Extract first chain from PDB if multiple chains exist
+        processed_file = extract_first_chain_from_pdb_file(structure_file)
+        
         client = Client("http://localhost:7860/")
         result = client.predict(
             function_selection="Activity",
-            file_obj=handle_file(structure_file),
+            file_obj=handle_file(processed_file),
             enable_ai=False,
             ai_model="DeepSeek",
             user_api_key=api_key,
@@ -459,7 +478,6 @@ def call_zero_shot_structure_prediction_from_file(structure_file: str, model_nam
                                 raw_result['csv_path'] = csv_path
                 except Exception as e:
                     print(f"Warning: Could not extract file paths: {e}")
-                
         
             return json.dumps(raw_result, indent=2)
         except (json.JSONDecodeError, KeyError, TypeError):
@@ -501,11 +519,12 @@ def call_protein_function_prediction(
         if fasta_file:
             fasta_path = fasta_file
         elif sequence:
-            temp_fasta = tempfile.NamedTemporaryFile(mode='w', suffix='.fasta', delete=False)
-            temp_fasta.write(f">temp_sequence\n{sequence}\n")
-            temp_fasta.close()
-            temp_fasta_path = temp_fasta.name
-            fasta_path = temp_fasta_path
+            # Use temp_outputs directory instead of system temp
+            temp_dir = get_save_path("MCP_Server", "TempFasta")
+            temp_fasta_path = temp_dir / f"temp_sequence_{uuid.uuid4().hex[:8]}.fasta"
+            with open(temp_fasta_path, 'w') as f:
+                f.write(f">temp_sequence\n{sequence}\n")
+            fasta_path = str(temp_fasta_path)
         else:
             return "Error: Either sequence or fasta_file must be provided"
 
@@ -550,11 +569,12 @@ def call_functional_residue_prediction(
         if fasta_file:
             fasta_path = fasta_file
         elif sequence:
-            temp_fasta = tempfile.NamedTemporaryFile(mode='w', suffix='.fasta', delete=False)
-            temp_fasta.write(f">temp_sequence\n{sequence}\n")
-            temp_fasta.close()
-            temp_fasta_path = temp_fasta.name
-            fasta_path = temp_fasta_path
+            # Use temp_outputs directory instead of system temp
+            temp_dir = get_save_path("MCP_Server", "TempFasta")
+            temp_fasta_path = temp_dir / f"temp_sequence_{uuid.uuid4().hex[:8]}.fasta"
+            with open(temp_fasta_path, 'w') as f:
+                f.write(f">temp_sequence\n{sequence}\n")
+            fasta_path = str(temp_fasta_path)
         else:
             return "Error: Either sequence or fasta_file must be provided"
 
@@ -908,10 +928,12 @@ def call_protein_properties_prediction(sequence: str = None, fasta_file: str = N
             file_path = fasta_file
             temp_fasta_created = False
         elif sequence:
-            temp_fasta = tempfile.NamedTemporaryFile(mode='w', suffix='.fasta', delete=False)
-            temp_fasta.write(f">temp_sequence\n{sequence}\n")
-            temp_fasta.close()
-            file_path = temp_fasta.name
+            # Use temp_outputs directory instead of system temp
+            temp_dir = get_save_path("MCP_Server", "TempFasta")
+            temp_fasta_path = temp_dir / f"temp_sequence_{uuid.uuid4().hex[:8]}.fasta"
+            with open(temp_fasta_path, 'w') as f:
+                f.write(f">temp_sequence\n{sequence}\n")
+            file_path = str(temp_fasta_path)
             temp_fasta_created = True
         else:
             return "Protein properties prediction error: No sequence or fasta_file provided."
