@@ -656,7 +656,7 @@ async def extract_pdb_sequence(pdb_file_path: str) -> str:
     meta={
         "scp_properties": {
             "type": "sync",
-            "limit": 10
+            "limit": 5
         }
     }
 )
@@ -705,7 +705,7 @@ async def predict_zero_shot_sequence(
     meta={
         "scp_properties": {
             "type": "sync",
-            "limit": 10
+            "limit": 5
         }
     }
 )
@@ -744,7 +744,7 @@ async def predict_zero_shot_structure(
     meta={
         "scp_properties": {
             "type": "sync",
-            "limit": 10
+            "limit": 5
         }
     }
 )
@@ -798,7 +798,7 @@ async def predict_protein_function(
     meta={
         "scp_properties": {
             "type": "sync",
-            "limit": 10
+            "limit": 5
         }
     }
 )
@@ -852,7 +852,7 @@ async def predict_functional_residue(
     meta={
         "scp_properties": {
             "type": "sync",
-            "limit": 10
+            "limit": 5
         }
     }
 )
@@ -903,7 +903,7 @@ async def predict_protein_properties(
     meta={
         "scp_properties": {
             "type": "sync",
-            "limit": 10
+            "limit": 5
         }
     }
 )
