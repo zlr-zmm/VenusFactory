@@ -34,7 +34,7 @@ from web.chat_tools import (
 UPLOAD_DIR = get_save_path("MCP_Server", "Uploads")
 OUTPUT_DIR = get_save_path("MCP_Server", "Outputs")
 
-default_port = int(os.getenv("MCP_HTTP_PORT", "8081"))
+default_port = int(os.getenv("MCP_HTTP_PORT", "8080"))
 default_host = os.getenv("MCP_HTTP_HOST", "0.0.0.0")
 
 logging.basicConfig(
@@ -452,7 +452,7 @@ _http_server_lock = threading.Lock()
 def start_http_server(host: Optional[str] = None, port: Optional[int] = None) -> tuple[str, int]:
     global _http_server_thread
     host = host or os.getenv("MCP_HTTP_HOST", "0.0.0.0")
-    port = port or int(os.getenv("MCP_HTTP_PORT", "8081"))
+    port = port or int(os.getenv("MCP_HTTP_PORT", "8080"))
 
     def _serve() -> None:
         try:
