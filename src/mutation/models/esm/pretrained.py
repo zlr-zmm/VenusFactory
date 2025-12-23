@@ -6,6 +6,7 @@
 import re
 import urllib
 import warnings
+import os
 from argparse import Namespace
 from pathlib import Path
 
@@ -29,13 +30,24 @@ def load_model_and_alphabet(model_name):
 
 
 def load_hub_workaround(url):
+    # 设置自定义缓存目录
+    custom_cache_dir = "data1/cache/model-esm_if1"
+    
     try:
-        data = torch.hub.load_state_dict_from_url(url, progress=False, map_location="cpu")
+        # 使用自定义缓存目录
+        data = torch.hub.load_state_dict_from_url(
+            url, 
+            progress=False, 
+            map_location="cpu",
+            model_dir=custom_cache_dir
+        )
     except RuntimeError:
         # Pytorch version issue - see https://github.com/pytorch/pytorch/issues/43106
         fn = Path(url).name
+        # 确保缓存目录存在
+        os.makedirs(custom_cache_dir, exist_ok=True)
         data = torch.load(
-            f"{torch.hub.get_dir()}/checkpoints/{fn}",
+            f"{custom_cache_dir}/{fn}",
             map_location="cpu",
         )
     except urllib.error.HTTPError as e:

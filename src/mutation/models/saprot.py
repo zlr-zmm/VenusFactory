@@ -152,7 +152,7 @@ def saprot_score(pdb_file: str, mutants: List[str], chain: str = "A",
     foldseek_struc_vocab = "pynwrqhgdlvtmfsaeikc#"
     # Setup foldseek path
     if foldseek_path is None:
-        foldseek_path = os.path.expanduser("~/.cache/huggingface/hub/models--westlake-repl--SaProt_650M_AF2/foldseek")
+        foldseek_path = os.path.expanduser("app/data1/cache/models--westlake-repl--SaProt_650M_AF2/foldseek")
         if not os.path.exists(foldseek_path + "/foldseek"):
             os.system(f"mkdir -p {foldseek_path}")
             os.system(f"wget https://huggingface.co/tyang816/Foldseek_bin/resolve/main/foldseek -P {foldseek_path}")
