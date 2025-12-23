@@ -521,17 +521,17 @@ def protssn_score(pdb_file: str, mutants: List[str],
     # Setup model paths
     if gnn_model_path is None:
         # if downloaded, use the local model
-        model_path = "/data1/cache/models--tyang816--ProtSSN/model/protssn_k10_h512.pt"
+        model_path = "data1/cache/models--tyang816--ProtSSN/model/protssn_k10_h512.pt"
         if os.path.exists(model_path):
-            gnn_base_path = "/data1/cache/models--tyang816--ProtSSN/model"
+            gnn_base_path = "data1/cache/models--tyang816--ProtSSN/model"
         else:
-            # download gnn model to /data1/cache/models--tyang816--ProtSSN
-            cache_dir = "/data1/cache/models--tyang816--ProtSSN"
+            # download gnn model to data1/cache/models--tyang816--ProtSSN
+            cache_dir = "data1/cache/models--tyang816--ProtSSN"
             os.system(f"mkdir -p {cache_dir}")
             os.system(f"wget https://huggingface.co/tyang816/ProtSSN/resolve/main/ProtSSN.zip -P {cache_dir}")
             os.system(f"unzip {cache_dir}/ProtSSN.zip -d {cache_dir}")
             os.system(f"rm {cache_dir}/ProtSSN.zip")
-            gnn_base_path = "/data1/cache/models--tyang816--ProtSSN/model"
+            gnn_base_path = "data1/cache/models--tyang816--ProtSSN/model"
     else:
         gnn_base_path = gnn_model_path
     
