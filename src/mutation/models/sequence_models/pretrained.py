@@ -1,4 +1,3 @@
-import os
 import torch
 import torch.nn as nn
 
@@ -62,9 +61,7 @@ def load_model_and_alphabet(model_name):
             url = CARP_URL + '%s.pt?download=1' %model_name
         elif 'mif' in model_name:
             url = MIF_URL + '%s.pt?download=1' %model_name
-        cache_dir = os.path.join("data1/cache", "mif")
-        os.makedirs(cache_dir, exist_ok=True)
-        model_data = torch.hub.load_state_dict_from_url(url, progress=False, map_location="cpu", model_dir=cache_dir)
+        model_data = torch.hub.load_state_dict_from_url(url, progress=False, map_location="cpu")
     else:
         model_data = torch.load(model_name, map_location="cpu")
     if 'big' in model_data['model']:
@@ -80,9 +77,7 @@ def load_model_and_alphabet(model_name):
         cnn = None
         if model_data['model'] == 'mif-st':
             url = CARP_URL + '%s.pt?download=1' % 'carp_640M'
-            cache_dir = os.path.join("data1/cache", "mif-st")
-            os.makedirs(cache_dir, exist_ok=True)
-            cnn_data = torch.hub.load_state_dict_from_url(url, progress=False, map_location="cpu", model_dir=cache_dir)
+            cnn_data = torch.hub.load_state_dict_from_url(url, progress=False, map_location="cpu")
             cnn = load_carp(cnn_data)
         collater = StructureCollater(collater, n_connections=30)
         model = MIF(gnn, cnn=cnn)
