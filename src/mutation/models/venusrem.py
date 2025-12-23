@@ -37,25 +37,20 @@ def process_pdb(pdb_file, output_dir):
     repeat = True
     try_times = 0
     while repeat:
-        result = subprocess.run(
-            [
-                "curl", "-X", "POST", "-F", f"q=@{pdb_file}", 
-                "-F", "mode=3diaa", "-F", "database[]=afdb50", 
-                "-F", "database[]=afdb-proteome", "-F", "database[]=cath50", 
-                "-F", "database[]=mgnify_esm30", "-F", "database[]=pdb100", 
-                "-F", "database[]=gmgcl_id", "-F", "database[]=afdb-swissprot", 
-                "-F", "database[]=bfvd", "-F", "database[]=bfmd", 
-                "https://search.foldseek.com/api/ticket"
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
         try:
-            result = result.stdout
-            ticket = json.loads(result)
-            repeat = ticket['status'] != 'COMPLETE'
-        except:
+            # Use requests instead of curl
+            with open(pdb_file, 'rb') as f:
+                files = {'q': f}
+                data = {
+                    'mode': '3diaa',
+                    'database[]': ['afdb50', 'afdb-proteome', 'cath50', 'mgnify_esm30', 
+                                   'pdb100', 'gmgcl_id', 'afdb-swissprot', 'bfvd', 'bfmd']
+                }
+                response = requests.post('https://search.foldseek.com/api/ticket', files=files, data=data)
+                ticket = response.json()
+                repeat = ticket['status'] != 'COMPLETE'
+        except Exception as e:
+            print(f'>>> Error submitting job: {e}')
             sleep(1)
             try_times += 1
             print('>>> Try again for the ' + str(try_times) + ' time')
@@ -65,7 +60,7 @@ def process_pdb(pdb_file, output_dir):
             continue
     
     print('>>> Ticket:', ticket)
-    result = get('https://search.foldseek.com/api/result/' + ticket['id'] + '/0').json()
+    result = requests.get('https://search.foldseek.com/api/result/' + ticket['id'] + '/0').json()
     structure_aln_dict = result
     results = structure_aln_dict['results']
     query_seq = structure_aln_dict['queries'][0]['sequence']

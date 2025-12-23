@@ -1277,7 +1277,7 @@ def handle_VenusMine(
 
 def create_advanced_tool_tab(constant: Dict[str, Any]) -> Dict[str, Any]:
     sequence_models = ["VenusPLM", "ESM2-650M", "ESM-1v", "ESM-1b"]
-    structure_models = ["VenusREM (foldseek-based)", "ProSST-2048", "ProtSSN", "ESM-IF1", "SaProt", "MIF-ST", "VenusREM"]
+    structure_models = ["VenusREM (foldseek-based)", "ProSST-2048", "ProtSSN", "ESM-IF1", "SaProt", "MIF-ST"]
     function_models = list(MODEL_MAPPING_FUNCTION.keys())
     residue_function_models = list(MODEL_RESIDUE_MAPPING_FUNCTION.keys())
 
