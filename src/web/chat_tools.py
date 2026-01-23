@@ -11,6 +11,9 @@ import gradio as gr
 import uuid
 import subprocess
 import sys
+import urllib.parse
+import concurrent.futures
+import re
 from Bio.PDB import PDBParser
 from Bio.SeqUtils import seq1
 from typing import Dict, Any, List, Optional, Tuple
@@ -24,8 +27,121 @@ from web.utils.file_handlers import extract_first_chain_from_pdb_file, extract_f
 from web.utils.common_utils import get_save_path
 from web.utils.literature import literature_search
 from web.utils.command import build_command_list, build_predict_command_list
-
+from web.utils.ESMFold_predict import predict_structure_sync
+from web.utils.Foldseek_search import get_foldseek_sequences
+from mcp.client.streamable_http import streamablehttp_client
+from mcp import ClientSession
+import asyncio
+from bs4 import BeautifulSoup
 load_dotenv()
+
+SCP_WORKFLOW_SERVER_URL = "http://115.190.136.251:8080/mcp"
+class SCPWorkflowClient:
+    def __init__(self, server_url: str = SCP_WORKFLOW_SERVER_URL):
+        self.server_url = server_url
+        self.session = None
+        self.transport = None
+        self.session_ctx = None
+        
+    async def connect(self, timeout: int = 30):
+        """Connect to SCP Workflow server"""
+        self.transport = streamablehttp_client(
+            url=self.server_url,
+            sse_read_timeout=60 * 10
+        )
+        
+        self.read, self.write, self.get_session_id = await asyncio.wait_for(
+            self.transport.__aenter__(), 
+            timeout=timeout
+        )
+        
+        self.session_ctx = ClientSession(self.read, self.write)
+        self.session = await self.session_ctx.__aenter__()
+        await asyncio.wait_for(
+            self.session.initialize(),
+            timeout=timeout
+        )
+        
+    async def disconnect(self):
+        try:
+            if self.session_ctx:
+                await self.session_ctx.__aexit__(None, None, None)
+            if self.transport:
+                await self.transport.__aexit__(None, None, None)
+        except Exception:
+            pass
+    
+    async def generate_presigned_url(self, key: str, expires_seconds: int = 3600) -> Dict[str, Any]:
+        result = await self.session.call_tool(
+            "generate_presigned_url",
+            arguments={
+                "key": key,
+                "expires_seconds": expires_seconds
+            }
+        )
+        
+        if hasattr(result, 'content') and result.content:
+            text = result.content[0].text
+            return json.loads(text)
+        return result
+
+async def upload_file_via_curl(upload_url: str, file_path: str) -> bool:
+    try:
+        process = await asyncio.create_subprocess_exec(
+            'curl',
+            '-X', 'PUT',
+            '-T', file_path,
+            upload_url,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        return process.returncode == 0
+    except Exception as e:
+        print(f"Upload via curl failed: {e}")
+        return False
+
+async def upload_file_to_cloud_async(file_path: str, key: Optional[str] = None, expires_seconds: int = 3600) -> Optional[str]:
+    client = SCPWorkflowClient()
+    try:
+        await client.connect()
+        
+        if not key:
+            key = Path(file_path).name
+        
+        result = await client.generate_presigned_url(key, expires_seconds)
+        
+        if "error" in result:
+            return None
+        
+        upload_url = result["upload"]["url"]
+        download_url = result["download"]["url"]
+        
+        success = await upload_file_via_curl(upload_url, file_path)
+        
+        if success:
+            return download_url
+        return None
+        
+    finally:
+        await client.disconnect()
+
+def upload_file_to_oss_sync(file_path: str) -> Optional[str]:
+    if not file_path or not os.path.exists(file_path):
+        print(f"File does not exist: {file_path}")
+        return None
+    
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            url = loop.run_until_complete(upload_file_to_cloud_async(file_path))
+            return url
+        finally:
+            loop.close()
+    except Exception as e:
+        print(f"Failed to upload file to OSS: {file_path}, error: {e}")
+        return None
 
 # Load constant.json for PLM model mappings
 CONSTANT_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "src", "constant.json")
@@ -42,7 +158,7 @@ class ZeroShotSequenceInput(BaseModel):
 class ZeroShotStructureInput(BaseModel):
     """Input for zero-shot structure mutation prediction"""
     structure_file: str = Field(..., description="Path to PDB structure file")
-    model_name: str = Field(default="ESM-IF1", description="Model name: SaProt, ProtSSN, ESM-IF1, MIF-ST, ProSST-2048")
+    model_name: str = Field(default="ESM-IF1", description="Model name: SaProt, ProtSSN, ESM-IF1, MIF-ST, ProSST-2048, VenusREM (foldseek-base)")
         
 class FunctionPredictionInput(BaseModel):
     """Input for protein function prediction"""
@@ -72,8 +188,9 @@ class PDBSequenceExtractionInput(BaseModel):
     pdb_file: str = Field(..., description="Path to local PDB file")
 
 class CSVTrainingConfigInput(BaseModel):
-    """Input for CSV training config generation"""
-    csv_file: str = Field(..., description="Path to CSV file with training data")
+    """Input for CSV or Hugging Face dataset training config generation"""
+    csv_file: Optional[str] = Field(None, description="Path to CSV file with training data or None if using Hugging Face dataset")
+    dataset_path: Optional[str] = Field(None, description="Dataset path (Local path or Hugging Face path like 'username/dataset_name')")
     valid_csv_file: Optional[str] = Field(None, description="Optional path to validation CSV file for early stopping")
     test_csv_file: Optional[str] = Field(None, description="Optional path to test CSV file for final evaluation")
     output_name: str = Field(default="custom_training_config", description="Name for the generated config")
@@ -82,6 +199,13 @@ class CSVTrainingConfigInput(BaseModel):
     class Config:
         # Allow arbitrary types to accept both str and dict
         arbitrary_types_allowed = True
+        
+    @validator('dataset_path', 'csv_file')
+    def validate_input_sources(cls, v, values):
+        # Ensure at least one of csv_file or dataset_path is provided
+        if 'csv_file' in values and values['csv_file'] is None and 'dataset_path' in values and values['dataset_path'] is None:
+            raise ValueError("Either csv_file or dataset_path must be provided")
+        return v
 class ProteinPropertiesInput(BaseModel):
     """Input for protein properties generation"""
     sequence: Optional[str] = Field(None, description="Protein sequence in single letter amino acid code")
@@ -98,6 +222,12 @@ class NCBISequenceInput(BaseModel):
     accession_id: str = Field(..., description="NCBI accession ID (e.g., NP_001123456, NM_001234567)")
     output_format: str = Field(default="fasta", description="Output format: fasta, genbank")
 
+class FoldSeekSearchInput(BaseModel):
+    """Input for FoldSeek search"""
+    pdb_file_path: str = Field(..., description="Path to PDB structure file")
+    protect_start: int = Field(..., description="Start position of protected region")
+    protect_end: int = Field(..., description="End position of protected region")
+
 class AlphaFoldStructureInput(BaseModel):
     """Input for AlphaFold structure download"""
     uniprot_id: str = Field(..., description="UniProt ID for AlphaFold structure download")
@@ -109,8 +239,13 @@ class PDBStructureInput(BaseModel):
     output_format: str = Field(default="pdb", description="Output format: pdb, mmcif")
 
 class LiteratureSearchInput(BaseModel):
-    """Input for literature search"""
-    query: str = Field(..., description="Search query")
+    """Input for academic literature search (arXiv, PubMed)"""
+    query: str = Field(..., description="Search query for academic literature")
+    max_results: int = Field(5, description="Maximum number of results to return")
+
+class DeepResearchInput(BaseModel):
+    """Input for web search using Google"""
+    query: str = Field(..., description="Search query for web search")
     max_results: int = Field(5, description="Maximum number of results to return")
 
 class ModelTrainingInput(BaseModel):
@@ -122,6 +257,12 @@ class ModelPredictionInput(BaseModel):
     config_path: str = Field(..., description="Path to prediction configuration JSON file")
     sequence: Optional[str] = Field(None, description="Single protein sequence to predict (for single prediction)")
     csv_file: Optional[str] = Field(None, description="Path to CSV file with sequences (for batch prediction)")
+
+class ProteinStructurePredictionInput(BaseModel):
+    """Input for protein structure prediction based on ESMFold"""
+    sequence: str = Field(..., description="Protein sequence in single letter amino acid code")
+    save_path: Optional[str] = Field(None, description="Path to save the predicted structure")
+    verbose: Optional[bool] = Field(default=True, description="Whether to print detailed information")
 
 
 # Langchain Tools
@@ -254,16 +395,49 @@ def PDB_sequence_extraction_tool(pdb_file: str) -> str:
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)})
 
-@tool("generate_training_config", args_schema=CSVTrainingConfigInput)
-def generate_training_config_tool(csv_file: str, valid_csv_file: Optional[str] = None, test_csv_file: Optional[str] = None, output_name: str = "custom_training_config", user_requirements: Optional[str] = None) -> str:
-    """Generate training JSON configuration from CSV files containing protein sequences and labels."""
+
+@tool("foldseek_search", args_schema=FoldSeekSearchInput)
+def foldseek_search_tool(pdb_file_path: str, protect_start: int, protect_end: int) -> str:
+    """Search for protein structures using FoldSeek."""    
     try:
-        return process_csv_and_generate_config(csv_file, valid_csv_file, test_csv_file, output_name, user_requirements=user_requirements)
+        fasta_file, total_sequences = get_foldseek_sequences(pdb_file_path, protect_start, protect_end)
+        fasta_file_oss_url = upload_file_to_oss_sync(fasta_file)
+        return json.dumps({
+            "success": True,
+            "fasta_file": fasta_file,
+            "fasta_file_oss_url": fasta_file_oss_url,
+            "total_sequences": total_sequences,
+        })
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": str(e)
+        })
+
+@tool("generate_training_config", args_schema=CSVTrainingConfigInput)
+def generate_training_config_tool(csv_file: Optional[str] = None, dataset_path: Optional[str] = None, valid_csv_file: Optional[str] = None, test_csv_file: Optional[str] = None, output_name: str = "custom_training_config", user_requirements: Optional[str] = None) -> str:
+    """Generate training JSON configuration from CSV files or Hugging Face datasets containing protein sequences and labels."""
+    try:
+        return process_csv_and_generate_config(csv_file, valid_csv_file, test_csv_file, output_name, dataset_path=dataset_path, user_requirements=user_requirements)
     except Exception as e:
         return json.dumps({
             "success": False,
             "error": f"Training config generation error: {str(e)}"
         }, ensure_ascii=False)
+
+@tool("Protein_structure_prediction_ESMFold", args_schema=ProteinStructurePredictionInput)
+def protein_structure_prediction_ESMFold_tool(sequence: str, save_path: Optional[str] = None, verbose: Optional[bool] = True) -> str:
+    """Predict protein structure using ESMFold."""
+    try:
+        pdb_path, result_info =  predict_structure_sync(sequence, save_path, verbose)
+        pdb_path_oss_url = upload_file_to_oss_sync(pdb_path)
+        return json.dumps({
+            "success": True, 
+            "pdb_path": pdb_path, 
+            "pdb_path_oss_url": pdb_path_oss_url, 
+            "result_info": result_info}, indent=2)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
 
 @tool("protein_properties_generation", args_schema=ProteinPropertiesInput)
 def protein_properties_generation_tool(sequence: Optional[str] = None, fasta_file: Optional[str] = None, task_name = "Physical and chemical properties", api_key: Optional[str] = None) -> str:
@@ -323,18 +497,125 @@ def alphafold_structure_download_tool(uniprot_id: str, output_format: str = "pdb
 @tool("literature_search", args_schema=LiteratureSearchInput)
 def literature_search_tool(query: str, max_results: int = 5) -> str:
     """
-    Search for literature using MCP Tools: arXiv / PubMed / Google
-
+    Search for academic literature using arXiv and PubMed.
+    Use this tool for finding scientific papers, articles, and research publications.
+    
     Args:
-        query: The query to search for.
+        query: The search query for academic literature (protein names, scientific concepts, etc.)
         max_results: The maximum number of results to return.
-
+        
     Returns:
-        A JSON string containing the search results.
+        A JSON string containing the academic literature search results.
     """
     try:
         refs = literature_search(query, max_results=max_results)
         return json.dumps({"success": True, "references": refs}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+@tool("deep_research", args_schema=DeepResearchInput)
+def deep_research_tool(query: str, max_results: int = 10) -> str:
+    """
+    Perform web search and extract content from top N results.
+    """
+    try:
+        results = []
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+        }
+        
+        encoded_query = urllib.parse.quote(query)
+        search_url = f"https://duckduckgo.com/html/?q={encoded_query}"
+        
+        search_items = []
+        
+        try:
+            print(f"Searching DuckDuckGo for: {query}")
+            response = requests.get(search_url, headers=headers, timeout=10)
+            print(f"DuckDuckGo search status code: {response.status_code}")
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                results_blocks = soup.select('div.result')
+                print(f"Found {len(results_blocks)} results on DuckDuckGo")
+                
+                for result in results_blocks[:max_results]:
+                    title_el = result.select_one('h2.result__title')
+                    link_el = result.select_one('a.result__a')
+                    desc_el = result.select_one('a.result__snippet')
+                    
+                    if title_el and link_el:
+                        url = link_el.get('href')
+                        if url and '//duckduckgo.com/l/?' in url:
+                            try:
+                                url_param = urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get('uddg', [''])[0]
+                                if url_param:
+                                    url = url_param
+                            except:
+                                pass
+                            
+                        if url and url.startswith('http'):
+                            search_items.append({
+                                "title": title_el.get_text().strip(),
+                                "url": url,
+                                "description": desc_el.get_text().strip() if desc_el else "",
+                                "source": "Web Search"
+                            })
+        except Exception as e:
+            return json.dumps({"success": False, "error": f"Search failed: {str(e)}"})
+
+        def fetch_page_content(item):
+            try:
+                page_resp = requests.get(item['url'], headers=headers, timeout=5)
+                if page_resp.status_code == 200:
+                    page_soup = BeautifulSoup(page_resp.text, 'html.parser')
+                    
+                    # 移除干扰元素
+                    for script in page_soup(["script", "style", "nav", "footer", "header", "iframe", "noscript"]):
+                        script.extract()
+                    
+                    paragraphs = page_soup.find_all(['p', 'h1', 'h2', 'h3'])
+                    
+                    content_parts = []
+                    char_count = 0
+                    max_chars = 1000 
+                    
+                    for p in paragraphs:
+                        text = p.get_text().strip()
+                        if len(text) > 30: 
+                            content_parts.append(text)
+                            char_count += len(text)
+                        if char_count >= max_chars:
+                            break
+                            
+                    full_content = "\n".join(content_parts)
+                    
+                    if full_content:
+                        item['content'] = full_content
+                    else:
+                        item['content'] = item['description']
+                else:
+                    item['content'] = item['description']
+            except Exception:
+                item['content'] = item['description']
+            return item
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_item = {executor.submit(fetch_page_content, item): item for item in search_items}
+            
+            for future in concurrent.futures.as_completed(future_to_item):
+                try:
+                    updated_item = future.result()
+                    results.append(updated_item)
+                except Exception:
+                    continue
+
+
+        return json.dumps({
+            "success": True,
+            "query": query,
+            "results": results[:max_results]
+        }, ensure_ascii=False)
+
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)})
 
@@ -377,9 +658,12 @@ def call_zero_shot_sequence_prediction(
         if 'temp_fasta_created' in locals() and temp_fasta_created:
             os.unlink(fasta_path)
 
-        # Extract tar path which contains heatmap
+        # Get tar path from result
         update_dict = result[3]
         tar_file_path = update_dict['value']
+        base_dir = get_save_path("Zero_shot", "HeatMap")
+        tar_filename = os.path.basename(tar_file_path)
+        tar_file_path = os.path.join(base_dir, tar_filename)
         
         # Limit mutation results to first 200 entries to avoid long context
         raw_result = result[2]
@@ -398,22 +682,19 @@ def call_zero_shot_sequence_prediction(
                                           f"out of {total_mutations} total to avoid long context. "
                                           f"Results are separated by '...'.")
             
-            # Add heatmap and CSV paths to the result if available
+            # Read tar file to get filenames, then find corresponding files in local directory
             if tar_file_path:
-                import tarfile
                 try:
-                    with tarfile.open(tar_file_path, 'r:gz') as tar:
-                        for member in tar.getmembers():
-                            if member.name.endswith('.html') and 'heatmap' in member.name.lower():
-                                heatmap_filename = os.path.basename(member.name)
-                                heatmap_dir = get_save_path("Zero_shot", "HeatMap")
-                                heatmap_path = str(heatmap_dir / heatmap_filename)
-                                raw_result['heatmap_path'] = heatmap_path
-                            elif member.name.endswith('.csv') and 'results' in member.name.lower():
-                                csv_filename = os.path.basename(member.name)
-                                csv_dir = get_save_path("Zero_shot", "HeatMap")
-                                csv_path = str(csv_dir / csv_filename)
-                                raw_result['csv_path'] = csv_path
+                    csv_filename = tar_filename.replace('pred_mut_', 'mut_res_').replace('.tar.gz', '.csv')
+                    heatmap_filename = tar_filename.replace('pred_mut_', 'mut_map_').replace('.tar.gz', '.html')
+                    csv_path = os.path.join(base_dir, csv_filename)
+                    heatmap_path = os.path.join(base_dir, heatmap_filename)
+                    if os.path.exists(csv_path):
+                        raw_result['csv_path'] = csv_path
+                        raw_result['csv_oss_url'] = upload_file_to_oss_sync(str(csv_path))
+                    if os.path.exists(heatmap_path):
+                        raw_result['heatmap_path'] = heatmap_path
+                        raw_result['heatmap_oss_url'] = upload_file_to_oss_sync(str(heatmap_path))
                 except Exception as e:
                     print(f"Warning: Could not extract file paths: {e}")
             
@@ -440,8 +721,12 @@ def call_zero_shot_structure_prediction_from_file(structure_file: str, model_nam
             api_name="/handle_mutation_prediction_base"
         )
         
-        # Extract tar path which contains heatmap
-        tar_path_str = result[3] if len(result) > 3 else None
+        # Get tar path from result
+        update_dict = result[3]
+        tar_file_path = update_dict['value']
+        base_dir = get_save_path("Zero_shot", "HeatMap")
+        tar_filename = os.path.basename(tar_file_path)
+        tar_file_path = os.path.join(base_dir, tar_filename)
         
         # Limit mutation results to first 200 entries to avoid long context
         raw_result = result[2]
@@ -460,25 +745,23 @@ def call_zero_shot_structure_prediction_from_file(structure_file: str, model_nam
                                           f"out of {total_mutations} total to avoid long context. "
                                           f"Results are separated by '...'.")
             
-            # Add heatmap and CSV paths to the result if available
-            if tar_path_str:
-                import tarfile
+            # Read tar file to get filenames, then find corresponding files in local directory
+            if tar_file_path:
                 try:
-                    with tarfile.open(tar_path_str, 'r:gz') as tar:
-                        for member in tar.getmembers():
-                            if member.name.endswith('.html') and 'heatmap' in member.name.lower():
-                                heatmap_filename = os.path.basename(member.name)
-                                heatmap_dir = get_save_path("Zero_shot", "HeatMap")
-                                heatmap_path = str(heatmap_dir / heatmap_filename)
-                                raw_result['heatmap_path'] = heatmap_path
-                            elif member.name.endswith('.csv') and 'results' in member.name.lower():
-                                csv_filename = os.path.basename(member.name)
-                                csv_dir = get_save_path("Zero_shot", "HeatMap")
-                                csv_path = str(csv_dir / csv_filename)
-                                raw_result['csv_path'] = csv_path
+                    csv_filename = tar_filename.replace('pred_mut_', 'mut_res_').replace('.tar.gz', '.csv')
+                    heatmap_filename = tar_filename.replace('pred_mut_', 'mut_map_').replace('.tar.gz', '.html')
+                    csv_path = os.path.join(base_dir, csv_filename)
+                    heatmap_path = os.path.join(base_dir, heatmap_filename)
+                    if os.path.exists(csv_path):
+                        raw_result['csv_path'] = csv_path
+                        raw_result['csv_oss_url'] = upload_file_to_oss_sync(str(csv_path))
+                    if os.path.exists(heatmap_path):
+                        raw_result['heatmap_path'] = heatmap_path
+                        raw_result['heatmap_oss_url'] = upload_file_to_oss_sync(str(heatmap_path))
                 except Exception as e:
                     print(f"Warning: Could not extract file paths: {e}")
-        
+                                    
+    
             return json.dumps(raw_result, indent=2)
         except (json.JSONDecodeError, KeyError, TypeError):
             # If not JSON or doesn't have expected structure, return as is
@@ -781,10 +1064,14 @@ def download_pdb_structure_from_id(pdb_id: str, output_format: str = "pdb") -> s
             if not seqs:
                 return json.dumps({"success": False, "pdb_id": pdb_id, "error_message": "No protein sequence found in PDB file."})
 
+            # Upload to OSS using sync wrapper
+            pdb_file_url = upload_file_to_oss_sync(str(expected_file))
+            
             return json.dumps({
                 "success": True,
                 "pdb_id": pdb_id,
                 "pdb_file": str(expected_file),
+                "oss_url": pdb_file_url,
                 "sequences": seqs,
                 "message": f"PDB structure downloaded and chain A extracted: {expected_file}"
             }, indent=2)
@@ -814,18 +1101,22 @@ def download_ncbi_sequence(accession_id: str, output_format: str = "fasta") -> s
         # Find the downloaded file
         expected_file = sequence_dir / f"{accession_id}.fasta"
         if expected_file.exists():
+            # Upload to OSS using sync wrapper
+            fasta_file_url = upload_file_to_oss_sync(str(expected_file))
+            
             return json.dumps({
                 "success": True,
                 "accession_id": accession_id,
                 "format": output_format,
-                "pdb_file": str(expected_file),
+                "fasta_file": str(expected_file),
+                "oss_url": fasta_file_url,
                 "message": f"Sequence downloaded successfully and saved to: {expected_file}",
                 "script_output": result.stdout
             })
         else:
             return json.dumps({
                 "success": False,
-                "accession_id": accession_id,
+                "accession_id": accession_id, 
                 "error_message": f"Download completed but file not found: {expected_file}",
                 "script_output": result.stdout
             })
@@ -887,11 +1178,15 @@ def download_alphafold_structure(uniprot_id: str, output_format: str = "pdb") ->
             except Exception:
                 pass  # Confidence parsing failed, but download was successful
             
+            # Upload to OSS using sync wrapper
+            pdb_file_url = upload_file_to_oss_sync(str(expected_file))
+            
             return json.dumps({
                 "success": True,
                 "uniprot_id": uniprot_id,
                 "format": output_format,
                 "pdb_file": str(expected_file),
+                "oss_url": pdb_file_url,
                 "confidence_info": confidence_info,
                 "message": f"AlphaFold structure downloaded successfully and saved to: {expected_file}",
                 "script_output": result.stdout
@@ -1329,16 +1624,102 @@ if __name__ == "__main__":
         })
 
 
-def process_csv_and_generate_config(csv_file: str, valid_csv_file: Optional[str] = None, test_csv_file: Optional[str] = None, output_name: str = "custom_training_config", user_overrides: Optional[Dict] = None, user_requirements: Optional[str] = None) -> str:
+def detect_sequence_and_label_columns(df: pd.DataFrame) -> Tuple[str, str]:
+    """Detect the most likely amino acid sequence and label columns in a DataFrame."""
+    # Initialize with default column names
+    aa_seq_column = 'aa_seq'
+    label_column = 'label'
+    
+    # Check if the default columns exist
+    if 'aa_seq' in df.columns and 'label' in df.columns:
+        return 'aa_seq', 'label'
+    
+    # Look for common sequence column names
+    sequence_column_candidates = ['sequence', 'protein_sequence', 'aa_sequence', 'amino_acid_sequence', 'seq', 'protein_seq']
+    for col in sequence_column_candidates:
+        if col in df.columns:
+            aa_seq_column = col
+            break
+    
+    # If still not found, try to identify by content (amino acid sequences)
+    if aa_seq_column == 'aa_seq' and 'aa_seq' not in df.columns:
+        for col in df.columns:
+            # Skip if column has numeric data
+            if pd.api.types.is_numeric_dtype(df[col]):
+                continue
+                
+            # Check if column contains amino acid sequences
+            sample = df[col].dropna().astype(str).iloc[0] if not df[col].empty else ""
+            if len(sample) > 10 and set(sample.upper()).issubset(set("ACDEFGHIKLMNPQRSTVWY")):
+                aa_seq_column = col
+                break
+    
+    # Look for common label column names
+    label_column_candidates = ['label', 'target', 'class', 'y', 'output', 'property', 'value']
+    for col in label_column_candidates:
+        if col in df.columns:
+            label_column = col
+            break
+            
+    # If still not found, use the first non-sequence column that's not the sequence
+    if label_column == 'label' and 'label' not in df.columns:
+        for col in df.columns:
+            if col != aa_seq_column:
+                label_column = col
+                break
+    
+    return aa_seq_column, label_column
+
+def download_and_process_huggingface_dataset(dataset_path: str) -> Tuple[pd.DataFrame, str]:
+    """Download and process a dataset from Hugging Face."""
     try:
-        df = pd.read_csv(csv_file)
-        required_columns = ['aa_seq', 'label']
+        from datasets import load_dataset
         
-        if not all(col in df.columns for col in required_columns):
-            missing = [col for col in required_columns if col not in df.columns]
+        # Check if dataset_path is a valid Hugging Face dataset path
+        if '/' in dataset_path:
+            # It's a Hugging Face dataset path like 'username/dataset_name'
+            dataset = load_dataset(dataset_path)
+        else:
+            # It might be a local path or a built-in dataset
+            dataset = load_dataset(dataset_path)
+        
+        # Convert to DataFrame - typically the first split is 'train'
+        if 'train' in dataset:
+            df = dataset['train'].to_pandas()
+        else:
+            # If no 'train' split, use the first available split
+            first_split = list(dataset.keys())[0]
+            df = dataset[first_split].to_pandas()
+        
+        # Save to a temporary CSV file
+        temp_dir = get_save_path("MCP_Server", "TempDatasets")
+        temp_csv_path = temp_dir / f"hf_dataset_{uuid.uuid4().hex[:8]}.csv"
+        df.to_csv(temp_csv_path, index=False)
+        
+        return df, str(temp_csv_path)
+    except Exception as e:
+        raise ValueError(f"Error downloading or processing Hugging Face dataset: {str(e)}")
+
+def process_csv_and_generate_config(csv_file: Optional[str] = None, valid_csv_file: Optional[str] = None, 
+                                   test_csv_file: Optional[str] = None, output_name: str = "custom_training_config", 
+                                   dataset_path: Optional[str] = None, user_overrides: Optional[Dict] = None, 
+                                   user_requirements: Optional[str] = None) -> str:
+    try:
+        # Handle Hugging Face dataset if provided
+        if dataset_path and not csv_file:
+            df, csv_file = download_and_process_huggingface_dataset(dataset_path)
+        else:
+            # Read CSV file
+            df = pd.read_csv(csv_file)
+        
+        # Detect sequence and label columns
+        aa_seq_column, label_column = detect_sequence_and_label_columns(df)
+        
+        # Check if the detected columns exist
+        if aa_seq_column not in df.columns or label_column not in df.columns:
             return json.dumps({
                 "success": False,
-                "error": f"Missing required columns: {missing}. Please ensure your CSV has 'aa_seq' and 'label' columns."
+                "error": f"Could not identify valid sequence and label columns in the dataset. Please ensure your data has protein sequences and labels."
             }, ensure_ascii=False)
         
         # Validate additional files if provided
@@ -1355,7 +1736,7 @@ def process_csv_and_generate_config(csv_file: str, valid_csv_file: Optional[str]
                 }, ensure_ascii=False)
         
         if test_csv_file:
-            try:
+            try: 
                 test_df = pd.read_csv(test_csv_file)
                 test_samples = len(test_df)
             except Exception as e:
@@ -1364,13 +1745,22 @@ def process_csv_and_generate_config(csv_file: str, valid_csv_file: Optional[str]
                     "error": f"Error reading test file: {str(e)}"
                 }, ensure_ascii=False)
         
+        # Create a copy of the DataFrame with standardized column names for analysis
+        analysis_df = df.copy()
+        analysis_df.rename(columns={aa_seq_column: 'aa_seq', label_column: 'label'}, inplace=True)
+        
         user_config = user_overrides or {}
-        analysis = analyze_dataset_for_ai(df, valid_csv_file or test_csv_file)
+        analysis = analyze_dataset_for_ai(analysis_df, valid_csv_file or test_csv_file)
         # Pass user requirements to AI config generation
         ai_config = generate_ai_training_config(analysis, user_requirements)
         default_config = get_default_config(analysis)
         # User config has highest priority, then AI config, then default
         final_params = merge_configs(user_config, ai_config, default_config)
+        
+        # Add detected column names to the configuration
+        final_params['sequence_column_name'] = aa_seq_column
+        final_params['label_column_name'] = label_column
+        
         config = create_comprehensive_config(csv_file, valid_csv_file, test_csv_file, final_params, analysis)
         config_dir = get_save_path("training_pipeline", "configs")
         timestamp = int(time.time())
@@ -1388,8 +1778,13 @@ def process_csv_and_generate_config(csv_file: str, valid_csv_file: Optional[str]
                 "train_samples": len(df),
                 "valid_samples": valid_samples,
                 "test_samples": test_samples,
-                "num_labels": analysis.get("unique_labels", 0),
-                "problem_type": final_params.get("problem_type", "unknown")
+                "num_labels": 19,
+                "problem_type": final_params.get("problem_type", "unknown"),
+                "detected_columns": {
+                    "sequence_column": aa_seq_column,
+                    "label_column": label_column
+                },
+                "data_source": "Hugging Face" if dataset_path else "CSV File"
             }
         }
         return json.dumps(result, ensure_ascii=False, indent=2)
@@ -1707,6 +2102,10 @@ def create_comprehensive_config(csv_file: str, valid_csv_file: Optional[str], te
     else:
         metrics_list = ["accuracy", "mcc", "f1", "precision", "recall", "auroc"]
     
+    # Get sequence and label column names from params or use defaults
+    sequence_column_name = params.get("sequence_column_name", "aa_seq")
+    label_column_name = params.get("label_column_name", "label")
+    
     config = {
         # Dataset configuration
         "dataset_selection": "Custom Dataset",
@@ -1714,8 +2113,8 @@ def create_comprehensive_config(csv_file: str, valid_csv_file: Optional[str], te
         "problem_type": params["problem_type"],
         "num_labels": 1 if is_regression else analysis['unique_labels'],
         "metrics": metrics_list,
-        "sequence_column_name": "aa_seq",
-        "label_column_name": "label",
+        "sequence_column_name": sequence_column_name,
+        "label_column_name": label_column_name,
         
         # Model and training method from final params
         "plm_model": params["plm_model"],
@@ -1767,6 +2166,7 @@ def create_comprehensive_config(csv_file: str, valid_csv_file: Optional[str], te
 def train_protein_model_tool(config_path: str) -> str:
     """Train a protein language model using a configuration file. This tool executes the training process and streams the training logs."""
     try:
+
         if not os.path.exists(config_path):
             return json.dumps({
                 "success": False,
