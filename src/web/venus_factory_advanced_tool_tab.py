@@ -312,6 +312,7 @@ def handle_protein_function_prediction_chat(
             else:
                 file_path = fasta_file.name
             cmd = [sys.executable, str(script_path), "--fasta_file", str(Path(file_path)), "--adapter_path", str(adapter_path), "--output_csv", str(output_file)]
+            print(cmd)
             subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8', errors='ignore')
 
             if output_file.exists():
@@ -321,7 +322,7 @@ def handle_protein_function_prediction_chat(
                 os.remove(output_file)
         except Exception as e:
             error_detail = e.stderr if isinstance(e, subprocess.CalledProcessError) else str(e)
-            all_results_list.append(pd.DataFrame([{"Dataset": dataset, "header": "ERROR", "sequence": error_detail}]))
+            all_results_list.append(pd.DataFrame([{"Dataset": dataset, "header": "ERROR"}]))
 
     if not all_results_list:
         return "⚠️ No results generated.", pd.DataFrame(), "Prediction scripts produced no output."
@@ -423,9 +424,22 @@ def handle_protein_function_prediction_chat(
                 display_df.rename(columns={'probabilities': 'Confidence Score'}, inplace=True)
         
         display_df.rename(columns={'Dataset': 'Dataset'}, inplace=True)
+    # Save sequence data to separate CSV file before removing from display
+    sequence_csv_path = None
+    sequence_csv_path = function_dir / f"sequences_{timestamp}.csv"
+    display_df.to_csv(sequence_csv_path, index=False)
+    # Remove Sequence column from display dataframe
+    display_df = display_df.drop(columns=['Sequence'])
+    
+    # Sort by Confidence Score and keep only top 50 results
+    if 'Confidence Score' in display_df.columns:
+        # Sort by Confidence Score in descending order (highest confidence first)
+        display_df = display_df.sort_values('Confidence Score', ascending=False)
+        # Keep only top 50 results
+    display_df = display_df[0:50]
 
     final_status = "✅ All predictions completed!"
-    return final_status, display_df, ""
+    return final_status, display_df, sequence_csv_path
 
 
 
@@ -690,6 +704,7 @@ def handle_protein_residue_function_prediction_chat(
         'predicted_label': 'Predicted Label',
         'probability': 'Probability',
     }
+    
     display_df.rename(columns=column_rename, inplace=True)
     if 'Probability' in display_df.columns:
         display_df['Probability'] = display_df['Probability'].round(3)
@@ -1536,67 +1551,71 @@ def create_advanced_tool_tab(constant: Dict[str, Any]) -> Dict[str, Any]:
                         adv_residue_function_download_btn = gr.DownloadButton("💾 Download Results", visible=False)
 
 
-            # with gr.TabItem("VenusMine"):
-            #     with gr.Row(equal_height=False):
-            #         with gr.Column(scale=2):
-            #             gr.Markdown("### 📁 Input Configuration")
+            with gr.TabItem("VenusMine"):
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=2):
+                        gr.Markdown("### 📁 Input Configuration")
                         
-            #             venus_pdb_upload = gr.File(label="Upload PDB Structure", file_types=[".pdb"], type="filepath")
+                        venus_pdb_upload = gr.File(label="Upload PDB Structure", file_types=[".pdb"], type="filepath")
                         
-            #             with gr.Accordion("⚙️ Advanced Parameters", open=False):
-            #                 with gr.Group():
-            #                     gr.Markdown("**Protected Region**")
-            #                     with gr.Row():
-            #                         venus_protect_start = gr.Number(label="Start Position", value=1, minimum=1, step=1)
-            #                         venus_protect_end = gr.Number(label="End Position", value=100, minimum=1, step=1)
+                        with gr.Accordion("⚙️ Advanced Parameters", open=False):
+                            with gr.Group():
+                                gr.Markdown("**Protected Region**")
+                                with gr.Row():
+                                    venus_protect_start = gr.Number(label="Start Position", value=1, minimum=1, step=1)
+                                    venus_protect_end = gr.Number(label="End Position", value=100, minimum=1, step=1)
                             
-            #                 with gr.Group():
-            #                     gr.Markdown("**MMseqs2 Search Parameters**")
-            #                     venus_mmseqs_threads = gr.Slider(label="Threads", minimum=1, maximum=100, value=96, step=1)
-            #                     venus_mmseqs_iterations = gr.Slider(label="Iterations", minimum=1, maximum=10, value=3, step=1)
-            #                     venus_mmseqs_max_seqs = gr.Slider(label="Max Sequences", minimum=100, maximum=5000, value=100, step=100)
+                            with gr.Group():
+                                gr.Markdown("**MMseqs2 Search Parameters**")
+                                venus_mmseqs_threads = gr.Slider(label="Threads", minimum=1, maximum=100, value=96, step=1)
+                                venus_mmseqs_iterations = gr.Slider(label="Iterations", minimum=1, maximum=10, value=3, step=1)
+                                venus_mmseqs_max_seqs = gr.Slider(label="Max Sequences", minimum=100, maximum=5000, value=100, step=100)
                             
-            #                 with gr.Group():
-            #                     gr.Markdown("**Clustering Parameters**")
-            #                     venus_cluster_min_seq_id = gr.Slider(label="Min Sequence Identity", minimum=0.1, maximum=1.0, value=0.5, step=0.05)
-            #                     venus_cluster_threads = gr.Slider(label="Threads", minimum=1, maximum=100, value=96, step=1)
+                            with gr.Group():
+                                gr.Markdown("**Clustering Parameters**")
+                                venus_cluster_min_seq_id = gr.Slider(label="Min Sequence Identity", minimum=0.1, maximum=1.0, value=0.5, step=0.05)
+                                venus_cluster_threads = gr.Slider(label="Threads", minimum=1, maximum=100, value=96, step=1)
                             
-            #                 with gr.Group():
-            #                     gr.Markdown("**Tree Building Parameters**")
-            #                     venus_top_n = gr.Slider(label="Top N Results", minimum=1, maximum=10000, value=10, step=1)
-            #                     venus_evalue = gr.Number(label="E-value Threshold", value=1e-5)
+                            with gr.Group():
+                                gr.Markdown("**Tree Building Parameters**")
+                                venus_top_n = gr.Slider(label="Top N Results", minimum=1, maximum=10000, value=10, step=1)
+                                venus_evalue = gr.Number(label="E-value Threshold", value=1e-5)
                         
-            #             venus_start_btn = gr.Button("🚀 Start VenusMine Pipeline", variant="primary", size="lg")
+                        venus_start_btn = gr.Button("🚀 Start VenusMine Pipeline", variant="primary", size="lg")
                         
-            #             # Status indicator
-            #             venus_status_indicator = gr.HTML(value="<div style='text-align: center; padding: 10px;'><span style='color: #666;'>Ready to start</span></div>")
+                        # Status indicator
+                        venus_status_indicator = gr.HTML(value="<div style='text-align: center; padding: 10px;'><span style='color: #666;'>Ready to start</span></div>")
 
-            #         with gr.Column(scale=5):
-            #             gr.Markdown("### 📈 Pipeline Results")
-            #             with gr.Tabs() as venus_result_tabs:
-            #                 with gr.TabItem("🔬 Structure Visualization"):
-            #                     venus_pdb_viewer = Molecule3D(label="Structure Viewer", reps=RCSB_REPS, height=400)
-            #                 with gr.TabItem("🌳 Phylogenetic Tree"):
-            #                     # 进度指示器
-            #                     venus_tree_progress = gr.HTML(value="", visible=False)
-            #                     venus_tree_image = gr.Image(label="Evolutionary Tree", type="filepath", visible=True)
-            #                     venus_tree_download_btn = gr.DownloadButton("📊 Download Tree Image", visible=False)
+                    with gr.Column(scale=5):
+                        gr.Markdown("### 📈 Pipeline Results")
+                        with gr.Tabs() as venus_result_tabs:
+                            with gr.TabItem("🔬 Structure Visualization"):
+                                venus_pdb_viewer = Molecule3D(label="Structure Viewer", reps=RCSB_REPS, height=400)
+                            with gr.TabItem("🌳 Phylogenetic Tree"):
+                                # 进度指示器
+                                venus_tree_progress = gr.HTML(value="", visible=False)
+                                venus_tree_image = gr.Image(label="Evolutionary Tree", type="filepath", visible=True)
+                                venus_tree_download_btn = gr.DownloadButton("📊 Download Tree Image", visible=False)
                                 
-            #                 with gr.TabItem("🏷️ Sequence Labels"):
-            #                     venus_labels_df = gr.DataFrame(
-            #                         label="Discovered Sequences",
-            #                         interactive=False, wrap=True)
-            #                     venus_labels_download_btn = gr.DownloadButton("📄 Download Labels (TSV)", visible=False)
+                            with gr.TabItem("🏷️ Sequence Labels"):
+                                venus_labels_df = gr.DataFrame(
+                                    label="Discovered Sequences",
+                                    interactive=False, wrap=True)
+                                venus_labels_download_btn = gr.DownloadButton("📄 Download Labels (TSV)", visible=False)
                             
-            #                 with gr.TabItem("📦 Complete Results"):
-            #                     gr.Markdown("Download all results in a single ZIP file")
-            #                     venus_full_zip_btn = gr.DownloadButton("📦 Download Complete Results", visible=False)
+                            with gr.TabItem("📦 Complete Results"):
+                                gr.Markdown("Download all results in a single ZIP file")
+                                venus_full_zip_btn = gr.DownloadButton("📦 Download Complete Results", visible=False)
                             
-            #                 with gr.TabItem("📋 Processing Log"):
-            #                     venus_log_output = gr.Textbox(
-            #                         label="Real-time Processing Log", lines=20, max_lines=25,
-            #                         interactive=False, autoscroll=True)
+                            with gr.TabItem("📋 Processing Log"):
+                                venus_log_output = gr.Textbox(
+                                    label="Real-time Processing Log", lines=20, max_lines=25,
+                                    interactive=False, autoscroll=True)
 
+        # clear_paste_content_pdb and clear_paste_content_fasta are imported from file_handlers
+        
+        # update_dataset_choices_fixed is now imported from utils.ui_helpers
+        
         
         enable_ai_zshot_seq.change(fn=toggle_ai_section, inputs=enable_ai_zshot_seq, outputs=ai_box_zshot_seq)
         enable_ai_zshot_stru.change(fn=toggle_ai_section, inputs=enable_ai_zshot_stru, outputs=ai_box_zshot_stru)
@@ -1778,28 +1797,28 @@ def create_advanced_tool_tab(constant: Dict[str, Any]) -> Dict[str, Any]:
 
         # handle_venus_pdb_upload is now defined outside create_advanced_tool_tab
         
-        # venus_pdb_upload.change(
-        #     fn=handle_venus_pdb_upload,
-        #     inputs=[venus_pdb_upload],
-        #     outputs=[venus_pdb_viewer]
-        # )
+        venus_pdb_upload.change(
+            fn=handle_venus_pdb_upload,
+            inputs=[venus_pdb_upload],
+            outputs=[venus_pdb_viewer]
+        )
 
-        # venus_start_btn.click(
-        #     fn=handle_VenusMine,
-        #     inputs=[venus_pdb_upload, venus_protect_start, venus_protect_end,
-        #         venus_mmseqs_threads, venus_mmseqs_iterations, venus_mmseqs_max_seqs,
-        #         venus_cluster_min_seq_id, venus_cluster_threads, venus_top_n, venus_evalue
-        #     ],
-        #     outputs=[
-        #         venus_log_output, 
-        #         venus_tree_image, 
-        #         venus_labels_df,
-        #         venus_tree_download_btn, 
-        #         venus_labels_download_btn, 
-        #         venus_full_zip_btn,
-        #         venus_tree_progress,
-        #         venus_status_indicator
-        #     ],
-        #     show_progress=True
-        # )
+        venus_start_btn.click(
+            fn=handle_VenusMine,
+            inputs=[venus_pdb_upload, venus_protect_start, venus_protect_end,
+                venus_mmseqs_threads, venus_mmseqs_iterations, venus_mmseqs_max_seqs,
+                venus_cluster_min_seq_id, venus_cluster_threads, venus_top_n, venus_evalue
+            ],
+            outputs=[
+                venus_log_output, 
+                venus_tree_image, 
+                venus_labels_df,
+                venus_tree_download_btn, 
+                venus_labels_download_btn, 
+                venus_full_zip_btn,
+                venus_tree_progress,
+                venus_status_indicator
+            ],
+            show_progress=True
+        )
     return demo

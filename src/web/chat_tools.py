@@ -25,7 +25,9 @@ from langchain.tools import tool
 from pydantic import BaseModel, Field, validator
 from web.utils.file_handlers import extract_first_chain_from_pdb_file, extract_first_sequence_from_fasta_file
 from web.utils.common_utils import get_save_path
-from web.utils.literature import literature_search
+from web.utils.search_dataset import dataset_search
+from web.utils.search_web import web_search
+from web.utils.search_literature import literature_search
 from web.utils.command import build_command_list, build_predict_command_list
 from web.utils.ESMFold_predict import predict_structure_sync
 from web.utils.Foldseek_search import get_foldseek_sequences
@@ -35,113 +37,9 @@ import asyncio
 from bs4 import BeautifulSoup
 load_dotenv()
 
-SCP_WORKFLOW_SERVER_URL = "http://115.190.136.251:8080/mcp"
-class SCPWorkflowClient:
-    def __init__(self, server_url: str = SCP_WORKFLOW_SERVER_URL):
-        self.server_url = server_url
-        self.session = None
-        self.transport = None
-        self.session_ctx = None
-        
-    async def connect(self, timeout: int = 30):
-        """Connect to SCP Workflow server"""
-        self.transport = streamablehttp_client(
-            url=self.server_url,
-            sse_read_timeout=60 * 10
-        )
-        
-        self.read, self.write, self.get_session_id = await asyncio.wait_for(
-            self.transport.__aenter__(), 
-            timeout=timeout
-        )
-        
-        self.session_ctx = ClientSession(self.read, self.write)
-        self.session = await self.session_ctx.__aenter__()
-        await asyncio.wait_for(
-            self.session.initialize(),
-            timeout=timeout
-        )
-        
-    async def disconnect(self):
-        try:
-            if self.session_ctx:
-                await self.session_ctx.__aexit__(None, None, None)
-            if self.transport:
-                await self.transport.__aexit__(None, None, None)
-        except Exception:
-            pass
-    
-    async def generate_presigned_url(self, key: str, expires_seconds: int = 3600) -> Dict[str, Any]:
-        result = await self.session.call_tool(
-            "generate_presigned_url",
-            arguments={
-                "key": key,
-                "expires_seconds": expires_seconds
-            }
-        )
-        
-        if hasattr(result, 'content') and result.content:
-            text = result.content[0].text
-            return json.loads(text)
-        return result
+from web.utils.oss_upload import upload_file_to_oss_sync
 
-async def upload_file_via_curl(upload_url: str, file_path: str) -> bool:
-    try:
-        process = await asyncio.create_subprocess_exec(
-            'curl',
-            '-X', 'PUT',
-            '-T', file_path,
-            upload_url,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
-        return process.returncode == 0
-    except Exception as e:
-        print(f"Upload via curl failed: {e}")
-        return False
-
-async def upload_file_to_cloud_async(file_path: str, key: Optional[str] = None, expires_seconds: int = 3600) -> Optional[str]:
-    client = SCPWorkflowClient()
-    try:
-        await client.connect()
-        
-        if not key:
-            key = Path(file_path).name
-        
-        result = await client.generate_presigned_url(key, expires_seconds)
-        
-        if "error" in result:
-            return None
-        
-        upload_url = result["upload"]["url"]
-        download_url = result["download"]["url"]
-        
-        success = await upload_file_via_curl(upload_url, file_path)
-        
-        if success:
-            return download_url
-        return None
-        
-    finally:
-        await client.disconnect()
-
-def upload_file_to_oss_sync(file_path: str) -> Optional[str]:
-    if not file_path or not os.path.exists(file_path):
-        print(f"File does not exist: {file_path}")
-        return None
-    
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            url = loop.run_until_complete(upload_file_to_cloud_async(file_path))
-            return url
-        finally:
-            loop.close()
-    except Exception as e:
-        print(f"Failed to upload file to OSS: {file_path}, error: {e}")
-        return None
+# SCP_WORKFLOW_SERVER_URL and upload logic moved to web.utils.oss_upload
 
 # Load constant.json for PLM model mappings
 CONSTANT_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "src", "constant.json")
@@ -242,11 +140,20 @@ class LiteratureSearchInput(BaseModel):
     """Input for academic literature search (arXiv, PubMed)"""
     query: str = Field(..., description="Search query for academic literature")
     max_results: int = Field(5, description="Maximum number of results to return")
+    source: str = Field("arxiv", description="Source to search: arxiv, pubmed, biorxiv, semantic_scholar, or all")
 
-class DeepResearchInput(BaseModel):
-    """Input for web search using Google"""
+class DatasetSearchInput(BaseModel):
+    """Input for dataset search (GitHub, Hugging Face)"""
+    query: str = Field(..., description="Search query for datasets")
+    max_results: int = Field(5, description="Maximum number of results to return")
+    source: str = Field("github", description="Source to search: github, hugging_face, or all")
+
+class WebSearchInput(BaseModel):
+    """Input for web search (DuckDuckGo, Tavily)"""
     query: str = Field(..., description="Search query for web search")
     max_results: int = Field(5, description="Maximum number of results to return")
+    source: str = Field("duckduckgo", description="Source to search: duckduckgo, tavily, or all")
+
 
 class ModelTrainingInput(BaseModel):
     """Input for protein model training"""
@@ -401,11 +308,11 @@ def foldseek_search_tool(pdb_file_path: str, protect_start: int, protect_end: in
     """Search for protein structures using FoldSeek."""    
     try:
         fasta_file, total_sequences = get_foldseek_sequences(pdb_file_path, protect_start, protect_end)
-        fasta_file_oss_url = upload_file_to_oss_sync(fasta_file)
+        fasta_file_oss_url = upload_file_to_oss_sync(str(fasta_file))
         return json.dumps({
             "success": True,
-            "fasta_file": fasta_file,
-            "fasta_file_oss_url": fasta_file_oss_url,
+            "fasta_file": str(fasta_file),
+            "fasta_file_oss_url": str(fasta_file_oss_url),
             "total_sequences": total_sequences,
         })
     except Exception as e:
@@ -430,7 +337,17 @@ def protein_structure_prediction_ESMFold_tool(sequence: str, save_path: Optional
     """Predict protein structure using ESMFold."""
     try:
         pdb_path, result_info =  predict_structure_sync(sequence, save_path, verbose)
+        
+        if not pdb_path:
+            return json.dumps({
+                "success": False, 
+                "error": "Protein structure prediction failed. Please check server logs for details."
+            })
+
+        # Upload to OSS
+        # This logic is centralized here in the tool layer
         pdb_path_oss_url = upload_file_to_oss_sync(pdb_path)
+            
         return json.dumps({
             "success": True, 
             "pdb_path": pdb_path, 
@@ -495,7 +412,7 @@ def alphafold_structure_download_tool(uniprot_id: str, output_format: str = "pdb
 
 
 @tool("literature_search", args_schema=LiteratureSearchInput)
-def literature_search_tool(query: str, max_results: int = 5) -> str:
+def literature_search_tool(query: str, max_results: int = 5, source: str = "arxiv") -> str:
     """
     Search for academic literature using arXiv and PubMed.
     Use this tool for finding scientific papers, articles, and research publications.
@@ -503,119 +420,55 @@ def literature_search_tool(query: str, max_results: int = 5) -> str:
     Args:
         query: The search query for academic literature (protein names, scientific concepts, etc.)
         max_results: The maximum number of results to return.
+        source: The source to search: arxiv, pubmed, biorxiv, semantic_scholar 
         
     Returns:
         A JSON string containing the academic literature search results.
     """
     try:
-        refs = literature_search(query, max_results=max_results)
+        refs = literature_search(query, max_results=max_results, source=source)
         return json.dumps({"success": True, "references": refs}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)})
 
-@tool("deep_research", args_schema=DeepResearchInput)
-def deep_research_tool(query: str, max_results: int = 10) -> str:
+
+@tool("dataset_search", args_schema=DatasetSearchInput)
+def dataset_search_tool(query: str, max_results: int = 5, source: str = "github") -> str:
     """
-    Perform web search and extract content from top N results.
+    Search for datasets using GitHub and Hugging Face.
+    Use this tool for finding datasets for model training.
+    
+    Args:
+        query: The search query for datasets (protein names, scientific concepts, etc.)
+        max_results: The maximum number of results to return.
+        source: The source to search: github, hugging_face, or all
+        
+    Returns:
+        A JSON string containing the dataset deep_research_toolsearch results.
     """
     try:
-        results = []
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
-        }
+        datasets = dataset_search(query, max_results=max_results, source=source)
+        return json.dumps({"success": True, "datasets": datasets}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+@tool("web_search", args_schema=WebSearchInput)
+def web_search_tool(query: str, max_results: int = 5, source: str = "duckduckgo") -> str:
+    """
+    Search the web using DuckDuckGo and Tavily.
+    Use this tool for finding information on the web.
+    
+    Args:
+        query: The search query for the web (protein names, scientific concepts, etc.)
+        max_results: The maximum number of results to return.
+        source: The source to search: duckduckgo, tavily, or all
         
-        encoded_query = urllib.parse.quote(query)
-        search_url = f"https://duckduckgo.com/html/?q={encoded_query}"
-        
-        search_items = []
-        
-        try:
-            print(f"Searching DuckDuckGo for: {query}")
-            response = requests.get(search_url, headers=headers, timeout=10)
-            print(f"DuckDuckGo search status code: {response.status_code}")
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                results_blocks = soup.select('div.result')
-                print(f"Found {len(results_blocks)} results on DuckDuckGo")
-                
-                for result in results_blocks[:max_results]:
-                    title_el = result.select_one('h2.result__title')
-                    link_el = result.select_one('a.result__a')
-                    desc_el = result.select_one('a.result__snippet')
-                    
-                    if title_el and link_el:
-                        url = link_el.get('href')
-                        if url and '//duckduckgo.com/l/?' in url:
-                            try:
-                                url_param = urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get('uddg', [''])[0]
-                                if url_param:
-                                    url = url_param
-                            except:
-                                pass
-                            
-                        if url and url.startswith('http'):
-                            search_items.append({
-                                "title": title_el.get_text().strip(),
-                                "url": url,
-                                "description": desc_el.get_text().strip() if desc_el else "",
-                                "source": "Web Search"
-                            })
-        except Exception as e:
-            return json.dumps({"success": False, "error": f"Search failed: {str(e)}"})
-
-        def fetch_page_content(item):
-            try:
-                page_resp = requests.get(item['url'], headers=headers, timeout=5)
-                if page_resp.status_code == 200:
-                    page_soup = BeautifulSoup(page_resp.text, 'html.parser')
-                    
-                    # 移除干扰元素
-                    for script in page_soup(["script", "style", "nav", "footer", "header", "iframe", "noscript"]):
-                        script.extract()
-                    
-                    paragraphs = page_soup.find_all(['p', 'h1', 'h2', 'h3'])
-                    
-                    content_parts = []
-                    char_count = 0
-                    max_chars = 1000 
-                    
-                    for p in paragraphs:
-                        text = p.get_text().strip()
-                        if len(text) > 30: 
-                            content_parts.append(text)
-                            char_count += len(text)
-                        if char_count >= max_chars:
-                            break
-                            
-                    full_content = "\n".join(content_parts)
-                    
-                    if full_content:
-                        item['content'] = full_content
-                    else:
-                        item['content'] = item['description']
-                else:
-                    item['content'] = item['description']
-            except Exception:
-                item['content'] = item['description']
-            return item
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_item = {executor.submit(fetch_page_content, item): item for item in search_items}
-            
-            for future in concurrent.futures.as_completed(future_to_item):
-                try:
-                    updated_item = future.result()
-                    results.append(updated_item)
-                except Exception:
-                    continue
-
-
-        return json.dumps({
-            "success": True,
-            "query": query,
-            "results": results[:max_results]
-        }, ensure_ascii=False)
-
+    Returns:
+        A JSON string containing the web search results.
+    """
+    try:
+        results = web_search(query, max_results=max_results, source=source)
+        return json.dumps({"success": True, "results": results}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)})
 
@@ -828,6 +681,12 @@ def call_protein_function_prediction(
 
         # Convert DataFrame to JSON string for MCP response
         df = result[1]
+        csv_path = result[2]
+        if csv_path:
+            csv_oss_url = upload_file_to_oss_sync(str(csv_path))
+        
+        df['csv_path'] = csv_path
+        df['csv_oss_url'] = csv_oss_url
         if isinstance(df, pd.DataFrame):
             # Convert DataFrame to JSON with records orientation
             # This will output: [{"Protein Name": "...", "Sequence": "...", "Predicted Class": "...", ...}, ...]

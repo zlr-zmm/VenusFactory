@@ -4,7 +4,6 @@ import base64
 import asyncio
 from typing import Dict, Any, Optional, Union, Tuple
 
-# MCP客户端导入
 from mcp.client.streamable_http import streamablehttp_client
 from mcp import ClientSession
 
@@ -12,7 +11,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# 服务器URL
 DRUGSDA_MODEL_SERVER_URL = os.getenv("DRUGSDA_MODEL_SERVER_URL")
 DRUGSDA_TOOL_SERVER_URL = os.getenv("DRUGSDA_TOOL_SERVER_URL")
 
@@ -213,7 +211,7 @@ async def predict_protein_structure(sequence: str, output_dir: str = "./protein_
         file_name = result_data["file_name"]
         base64_string = result_data["base64_string"]
         if verbose:
-            print(f"文件转换为Base64: {file_name}, Base64前20个字符: {base64_string[:20]}...")
+            print(f"文件转换为Base64: {file_name}, Base64前20个字符: {base64_string[:20]}...", "保存路径: ", output_dir)
         
         # 步骤3: 将Base64字符串转换为本地PDB文件
         if verbose:
@@ -251,26 +249,30 @@ async def predict_protein_structure(sequence: str, output_dir: str = "./protein_
         await model_client.disconnect(verbose=verbose)
 
 
-def predict_structure_sync(sequence: str, output_dir: str = "./protein_structures", 
+def predict_structure_sync(sequence: str, output_dir: Optional[str] = None, 
                           verbose: bool = True) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
     """
     同步版本的蛋白质结构预测函数（用于非异步环境）
     
     参数:
         sequence: 蛋白质序列
-        output_dir: 输出目录
+        output_dir: 输出目录，如果为None则使用默认目录 "./protein_structures"
         verbose: 是否打印详细信息
         
     返回:
         (保存的PDB文件路径, 预测结果信息)，如果失败则返回(None, None)
     """
+    if output_dir is None:
+        output_dir = "./protein_structures"
+        
+    # Create a new event loop for this thread/execution context
+    # Do not use get_event_loop() to avoid interference with other tasks or closed loops in the thread pool
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    return loop.run_until_complete(predict_protein_structure(sequence, output_dir, verbose))
+        return loop.run_until_complete(predict_protein_structure(sequence, output_dir, verbose))
+    finally:
+        loop.close()
 
 
 
